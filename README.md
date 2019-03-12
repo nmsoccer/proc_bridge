@@ -46,6 +46,6 @@ A distributed inter-proc communication system
   * retrun: -1:错误 -2:暂无数据 -3:接收缓冲区长度不足 >0:sucess,实际接收的数据长度
   
 ### 架构简介  
-下面以游戏服务器开发中常见的三段论，接入-逻辑-数据三层进程间通信架构举例，后续的扩展与说明均在此基础进行扩充  
-
+下面以游戏服务器开发中常见的三段论，接入-逻辑-数据三层进程间通信架构举例，后续的扩展与说明均在此基础进行扩充    
+![架构图](https://github.com/nmsoccer/proc_bridge/blob/master/pic/main.jpg)
 # to be continue
