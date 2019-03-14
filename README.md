@@ -11,8 +11,8 @@ A distributed inter-proc communication system
 * 想好了再说...
 
 ### 环境依赖
-在通用正常配置的unix-linux开发环境中，无需特别依赖，只需要再安装两个基本库即可:
-* _slog_:一个简单的日志记录库
+该系统设计目的之一就是尽量减少环境依赖，所以在通用配置的unix-linux开发环境中，除了在构建打包机器上需要安装python用于部署之外，只需要再安装两个简单的支持库即可:
+* _slog_:一个简单的日志库
   * https://github.com/nmsoccer/slog
   * 安装:下载安装包文件xx.zip; unzip xx.zip; ./install.sh  
          
