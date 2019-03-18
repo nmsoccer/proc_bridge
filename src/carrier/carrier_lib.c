@@ -23,6 +23,7 @@ static int handle_msg_event(manager_info_t *pmanage , int from , carrier_msg_t *
 static int handle_msg_error(manager_info_t *pmanage , int from , carrier_msg_t *pmsg);
 static int do_manage_cmd_stat(carrier_env_t *penv , manager_cmd_req_t *preq);
 static int do_manage_cmd_error(carrier_env_t *penv , manager_cmd_req_t *preq);
+static int do_manage_cmd_proto(carrier_env_t *penv , manager_cmd_req_t *preq);
 
 /*
  * append_recv_channel
@@ -361,6 +362,9 @@ int send_inner_proto(carrier_env_t *penv , target_detail_t *ptarget , int proto 
 	{
 	case INNER_PROTO_PING:
 		break;
+	case INNER_PROTO_PONG:
+		strncpy(preq->data.proc_name , (char *)arg1 , sizeof(preq->data.proc_name));
+		break;
 	case INNER_PROTO_VERIFY_REQ:
 		strncpy(preq->data.verify_key , (char *)arg1 , sizeof(preq->data.verify_key));
 		break;
@@ -397,6 +401,12 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 {
 	bridge_package_t *ppkg = NULL;
 	inner_proto_t *preq = NULL;
+	target_detail_t *ptarget = NULL;
+
+	char bridge_pack_buff[GET_PACK_LEN(sizeof(manager_cmd_rsp_t))] = {0};
+	bridge_package_t *pbridge_pkg;
+	manager_cmd_rsp_t *prsp;
+	cmd_proto_rsp_t *pproto_rsp;
 	int slogd = -1;
 	int ret = -1;
 
@@ -409,6 +419,18 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 	preq = (inner_proto_t *)ppkg->pack_data;
 	slogd = penv->slogd;
 
+	pbridge_pkg = (bridge_package_t *)bridge_pack_buff;
+	pbridge_pkg->pack_head.data_len = sizeof(manager_cmd_rsp_t);
+	pbridge_pkg->pack_head.send_ts = time(NULL);
+	pbridge_pkg->pack_head.sender_id = penv->proc_id;
+	pbridge_pkg->pack_head.recver_id = penv->proc_id;
+
+	prsp = (manager_cmd_rsp_t *)pbridge_pkg->pack_data;
+	if(penv->pmanager)
+		prsp->manage_stat = penv->pmanager->stat;
+	prsp->type = MANAGER_CMD_PROTO;
+	pproto_rsp = &prsp->data.proto;
+
 	/***Handle*/
 	slog_log(slogd , SL_DEBUG , "<%s> proto:%d src:%d ts:%ld" , __FUNCTION__  , preq->type , ppkg->pack_head.sender_id ,
 			ppkg->pack_head.send_ts);
@@ -416,7 +438,35 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 	switch(preq->type)
 	{
 	case INNER_PROTO_PING:
+		if(!pclient->verify)
+			break;
+		ptarget = proc_id2_target(penv->ptarget_info , pclient->proc_id);	//get target
+		if(!ptarget || ptarget->connected!=TARGET_CONN_DONE)
+		{
+			slog_log(slogd , SL_ERR , "<%s> Connection from Ping:%d may not ready!" , __FUNCTION__ , pclient->proc_id);
+			break;
+		}
+
+		//send back
+		send_inner_proto(penv , ptarget , INNER_PROTO_PONG , penv->proc_name , NULL);
 	break;
+	case INNER_PROTO_PONG:
+		if(!pclient->verify)
+			break;
+		slog_log(slogd  , SL_DEBUG , "<%s> pong from %d:%s" , __FUNCTION__ , pclient->proc_id , preq->data.proc_name);
+		if(penv->proc_id > MANAGER_PROC_ID_MAX)	//非manager不向上层传递
+			break;
+
+		if(penv->phub->attached < 2)	//uuper closed
+			break;
+
+		pproto_rsp->type = CMD_PROTO_T_PING;
+		pproto_rsp->result = 0;
+		strncpy(pproto_rsp->arg , preq->data.proc_name , sizeof(pproto_rsp->arg));
+			//send to manager
+		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
+		slog_log(slogd , SL_INFO , "<%s> append recv channel ret:%d result:%d" , __FUNCTION__ , ret , pproto_rsp->result);
+		break;
 	case INNER_PROTO_VERIFY_REQ:
 		slog_log(slogd , SL_INFO , "<%s> recv verfiy key:%s from  %d<%s:%d>" , __FUNCTION__ , preq->data.verify_key , pclient->fd ,
 				pclient->client_ip , pclient->client_port);
@@ -425,7 +475,8 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 		{
 			pclient->verify = 1;
 			pclient->proc_id = ppkg->pack_head.sender_id;
-			slog_log(slogd , SL_INFO , "<%s> verify success! " , __FUNCTION__);
+			slog_log(slogd , SL_INFO , "<%s> verify success! client proc_id:%d located %d<%s:%d>" , __FUNCTION__ , pclient->proc_id ,
+					pclient->fd ,	pclient->client_ip , pclient->client_port);
 		}
 		else
 			slog_log(slogd , SL_ERR , "<%s> verify failed! " , __FUNCTION__);
@@ -811,7 +862,16 @@ int handle_manager_cmd(carrier_env_t *penv , void *data)
 		return -1;
 
 	slogd = penv->slogd;
-	slog_log(slogd , SL_DEBUG , "<%s> cmd_req:type:%d" , __FUNCTION__ , preq->type);
+	slog_log(slogd , SL_INFO , "<%s> cmd_req:type:%d" , __FUNCTION__ , preq->type);
+
+	/***Basic Check*/
+	if(!penv->pmanager)
+	{
+		slog_log(slogd , SL_ERR , "<%s> failed! pmanager NULL!" , __FUNCTION__);
+		return -1;
+	}
+
+
 	/***Handle*/
 	do
 	{
@@ -824,6 +884,12 @@ int handle_manager_cmd(carrier_env_t *penv , void *data)
 		if(preq->type == MANAGER_CMD_ERR)
 		{
 			do_manage_cmd_error(penv , preq);
+			break;
+		}
+
+		if(preq->type == MANAGER_CMD_PROTO)
+		{
+			do_manage_cmd_proto(penv , preq);
 			break;
 		}
 	}
@@ -1509,5 +1575,101 @@ _final_send:
 		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
 		slog_log(slogd , SL_DEBUG , "<%s> last append recv channel ret:%d count:%d" , __FUNCTION__ , ret , psub_rsp->count);
 	}
+	return 0;
+}
+
+static int do_manage_cmd_proto(carrier_env_t *penv , manager_cmd_req_t *preq)
+{
+	char bridge_pack_buff[GET_PACK_LEN(sizeof(manager_cmd_rsp_t))] = {0};
+	bridge_package_t *pbridge_pkg;
+	manager_cmd_rsp_t *prsp;
+	cmd_proto_req_t *psub_req = NULL;
+	cmd_proto_rsp_t *psub_rsp = NULL;
+
+	manager_info_t *pmanager = NULL;
+	manage_item_t *pitem = NULL;
+	target_detail_t *ptarget = NULL;
+	int i = 0;
+	int slogd = -1;
+	int ret = -1;
+	int send_back = 0;
+
+	/***Arg Check*/
+	if(!penv || !preq)
+		return -1;
+
+	/***Init*/
+	slogd = penv->slogd;
+	psub_req = &preq->data.proto;
+	pmanager = penv->pmanager;
+
+	pbridge_pkg = (bridge_package_t *)bridge_pack_buff;
+	pbridge_pkg->pack_head.data_len = sizeof(manager_cmd_rsp_t);
+	pbridge_pkg->pack_head.send_ts = time(NULL);
+	pbridge_pkg->pack_head.sender_id = penv->proc_id;
+	pbridge_pkg->pack_head.recver_id = penv->proc_id;
+
+	prsp = (manager_cmd_rsp_t *)&pbridge_pkg->pack_data[0];
+	prsp->type = preq->type;
+
+	psub_rsp = &prsp->data.proto;
+	psub_rsp->type = psub_req->type;
+	strncpy(psub_rsp->arg , psub_req->arg , sizeof(psub_rsp->arg));
+	psub_rsp->result = -1;
+	prsp->manage_stat = pmanager->stat;
+	if(prsp->manage_stat != MANAGE_STAT_OK)
+	{
+		send_back = 1;
+		goto _send_back;
+	}
+
+	/***Handle*/
+	switch(psub_req->type)
+	{
+	case CMD_PROTO_T_PING:
+		//get target
+		for(i=0; i<pmanager->item_count; i++)
+		{
+			pitem = &pmanager->item_list[i];
+			if(strncmp(pitem->proc.name , psub_req->arg , sizeof(PROC_ENTRY_NAME_LEN)) == 0)
+				break;
+		}
+		if(i >= pmanager->item_count) //not found
+		{
+			slog_log(slogd , SL_ERR , "<%s> PING %s Item not found!" , __FUNCTION__ , psub_req->arg);
+			send_back = 1;
+			break;
+		}
+
+		ptarget = proc_id2_target(penv->ptarget_info , pitem->proc.proc_id);
+		if(!ptarget)
+		{
+			slog_log(slogd , SL_ERR , "<%s> PING %s Target not found!" , __FUNCTION__ , psub_req->arg);
+			send_back = 1;
+			break;
+		}
+
+		//match send to server
+		ret = send_inner_proto(penv , ptarget , INNER_PROTO_PING , NULL , NULL);
+		if(ret != 0)
+		{
+			slog_log(slogd , SL_ERR , "<%s> Send Inner Proto to %s Failed!" , __FUNCTION__ , psub_req->arg);
+			send_back = 1;
+			break;
+		}
+		break;
+	default:
+		slog_log(slogd , SL_ERR , "<%s> failed! illegal proto:%d" , __FUNCTION__ , psub_req->type);
+		break;
+	}
+
+	/***Send Back*/
+_send_back:
+	if(send_back)
+	{
+		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
+		slog_log(slogd , SL_DEBUG , "<%s> append recv channel ret:%d result:%d" , __FUNCTION__ , ret , psub_rsp->result);
+	}
+
 	return 0;
 }

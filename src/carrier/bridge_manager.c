@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <termios.h>
+#include <sys/wait.h>
 #include "proc_bridge.h"
 #include "carrier_lib.h"
 #include "manager_lib.h"
@@ -25,6 +26,7 @@ extern int errno;
 #define CMD_STR_CONN_ERR "PROB-CONN"
 #define CMD_STR_SYS_ERR "PROB-SYS"
 #define CMD_STR_ANY_ERR "PROB-ANY"
+#define CMD_STR_PING "PING"
 
 /************END**************/
 
@@ -61,6 +63,7 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg);
 static int strip_exra_space(char *str);
 static int print_rsp_stat(manager_cmd_rsp_t *prsp);
 static int print_rsp_err(manager_cmd_rsp_t *prsp);
+static int print_rsp_proto(manager_cmd_rsp_t *prsp);
 
 int main(int argc , char **argv)
 {
@@ -69,7 +72,6 @@ int main(int argc , char **argv)
 	int opt;
 	int ret;
 	int slogd;
-	int status;
 
 	/***Init*/
 	memset(penv , 0 , sizeof(carrier_manager_env_t));
@@ -178,12 +180,13 @@ int main(int argc , char **argv)
 static int show_cmd()
 {
 	fprintf(penv->fp_out , "+--------CMD LIST--------+\n");
-	fprintf(penv->fp_out , "【%s】 exit manager tool\n" , CMD_STR_EXIT);
+	fprintf(penv->fp_out , "【%s】 <proc_name> ping to check \n" , CMD_STR_PING);
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] get status of <proc_name>[*]\n" , CMD_STR_STAT);
 	//fprintf(penv->fp_out , "|STAT-ALL get all carrier status\n");
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] show probable connection problems  of <proc_name>[*]\n" , CMD_STR_CONN_ERR);
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] show probable sys problems  of <proc_name>[*]\n" , CMD_STR_SYS_ERR);
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] show all probable problems of net or sys of <proc_name>[*]\n" , CMD_STR_ANY_ERR);
+	fprintf(penv->fp_out , "【%s】 exit manager tool\n" , CMD_STR_EXIT);
 	fprintf(penv->fp_out , "+--------------------------+\n");
 	return 0;
 }
@@ -283,6 +286,26 @@ static int parent_parse_cmd(char *str_cmd)
 	/***Parse Cmd*/
 	do
 	{
+
+		//PING
+		if(strcmp(ppkg->cmd , CMD_STR_PING) == 0)
+		{
+			strip_exra_space(ppkg->arg);
+			if(strchr(ppkg->arg , ' '))
+			{
+				fprintf(penv->fp_out , "Error:cmd 【%s】 only accept one arg!\n" , ppkg->cmd);
+				return -1;
+			}
+				//check arg
+			if(strlen(ppkg->arg) <= 0)
+			{
+				fprintf(penv->fp_out , "Error:cmd 【%s】 needs a arg of <proc_name>\n" , ppkg->cmd);
+				return -1;
+			}
+
+			break;
+		}
+
 		//STAT,SHOW-ERR
 		if(strcmp(ppkg->cmd , CMD_STR_STAT) == 0 || strcmp(ppkg->cmd , CMD_STR_ANY_ERR)==0 ||
 			strcmp(ppkg->cmd , CMD_STR_CONN_ERR)==0 || strcmp(ppkg->cmd , CMD_STR_SYS_ERR)==0)
@@ -306,6 +329,7 @@ static int parent_parse_cmd(char *str_cmd)
 			break;
 		}
 
+
 		//STAT-ALL
 		if(strcmp(ppkg->cmd , "STAT-ALL") == 0)
 		{
@@ -321,7 +345,6 @@ static int parent_parse_cmd(char *str_cmd)
 			break;
 		}
 
-_parse_bad:
 		//unknown
 		show_cmd();
 		return 0;
@@ -353,8 +376,6 @@ _parse_bad:
 static int child_process()
 {
 	manager_cmd_rsp_t rsp;
-	cmd_stat_rsp_t *pstat_rsp = NULL;
-	cmd_err_rsp_t *perr_rsp = NULL;
 
 	manager_pipe_pkg_t pipe_pkg;
 	manager_pipe_pkg_t *ppkg = &pipe_pkg;
@@ -402,12 +423,12 @@ static int child_process()
 		}
 
 		/***Read Bridge*/
-		ret = recv_from_bridge(penv->bd , &rsp , sizeof(rsp));
+		ret = recv_from_bridge(penv->bd , (char *)&rsp , sizeof(rsp) , 5);
 		if(ret <= 0)
 			continue;
 
 		//print
-		//printf("read bridge pkg! recved:%d recv_len:%d type:%d\n" , ret , sizeof(rsp) , rsp.type);
+		printf("read bridge pkg! recved:%d recv_len:%d type:%d\n" , ret , sizeof(rsp) , rsp.type);
 		switch(rsp.type)
 		{
 		case MANAGER_CMD_STAT:
@@ -415,6 +436,9 @@ static int child_process()
 		break;
 		case MANAGER_CMD_ERR:
 			print_rsp_err(&rsp);
+		break;
+		case MANAGER_CMD_PROTO:
+			print_rsp_proto(&rsp);
 		break;
 		default:
 		break;
@@ -435,6 +459,16 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 	/***Handle Cmd*/
 	do
 	{
+		//PING
+		if(strcmp(ppkg->cmd , CMD_STR_PING) == 0)
+		{
+			memset(&cmd_req , 0 , sizeof(cmd_req));
+			cmd_req.type = MANAGER_CMD_PROTO;
+			cmd_req.data.stat.type = CMD_PROTO_T_PING;
+			strncpy(cmd_req.data.proto.arg , ppkg->arg , MANAGER_CMD_ARG_LEN);
+			break;
+		}
+
 		//STAT
 		if(strcmp(ppkg->cmd , CMD_STR_STAT) == 0)
 		{
@@ -498,7 +532,7 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 	while(0);
 
 	/***Send*/
-	ret = send_to_bridge(penv->bd , penv->proc_id , &cmd_req , sizeof(manager_cmd_req_t));
+	ret = send_to_bridge(penv->bd , penv->proc_id , (char *)&cmd_req , sizeof(manager_cmd_req_t));
 	if(ret != 0)
 	{
 		fprintf(penv->fp_out , "send to bridge failed!\n");
@@ -615,3 +649,58 @@ static int print_rsp_err(manager_cmd_rsp_t *prsp)
 		fprintf(penv->fp_out , "No Result Found!  Please check!\n");
 	return 0;
 }
+
+static int print_rsp_proto(manager_cmd_rsp_t *prsp)
+{
+	cmd_proto_rsp_t *psub = NULL;
+	char cmd[MANAGER_CMD_NAME_LEN] = {0};
+	/***Arg Check*/
+	if(!prsp)
+		return -1;
+
+	/***Init*/
+	psub = &prsp->data.proto;
+
+	/**Convert*/
+	switch(psub->type)
+	{
+	case CMD_PROTO_T_PING:
+		strncpy(cmd , "PING" , sizeof(cmd));
+		break;
+	default:
+		strncpy(cmd , "???" , sizeof(cmd));
+		break;
+	}
+
+	/***Print Head*/
+	fprintf(penv->fp_out , "==========================\n");
+	fprintf(penv->fp_out , "【%s %s】\n" , cmd , psub->arg);
+	fprintf(penv->fp_out , "==========================\n");
+
+	/***Print Manager Stat*/
+	if(prsp->manage_stat != MANAGE_STAT_OK)
+	{
+		fprintf(penv->fp_out , "Sorry Manager is not available! now is:%s\n" , prsp->manage_stat==MANAGE_STAT_INIT?"initing":"wrong");
+		return 0;
+	}
+
+	/***Print Body*/
+	if(psub->result < 0)
+	{
+		fprintf(penv->fp_out , "No Result Found!  Please check!\n");
+		return -1;
+	}
+
+	//success
+	switch(psub->type)
+	{
+	case CMD_PROTO_T_PING:
+		fprintf(penv->fp_out , "PONG\n");
+		break;
+	default:
+		break;
+	}
+
+	return 0;
+}
+

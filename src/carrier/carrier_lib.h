@@ -26,6 +26,35 @@ typedef struct _proc_entry_t
 
 
 /*
+ * channel_info
+ */
+typedef struct _half_bridge_info_t
+{
+	int total_size;
+	int head;
+	int tail;
+	unsigned int handled;	//处理过的包数
+	int handing;	//正在处理的包数
+
+	int	min_pkg_size;	//最小包长
+	int 	max_pkg_size;	//最大包长
+	int aver_pkg_size;	//平均包长
+
+	unsigned int dropped;	//丢弃包数目
+	long latest_drop;	//最近一次丢包时间
+
+	unsigned int reset_connect;	//重置链接次数
+	long latest_reset;
+}half_bridge_info_t;
+
+typedef struct _bridge_info_t
+{
+	half_bridge_info_t send;
+	half_bridge_info_t recv;
+}bridge_info_t;
+
+
+/*
  * target info
  */
 #define TARGET_CONN_NONE 0	//未连接
@@ -167,6 +196,7 @@ typedef struct _carrier_env_t
 	target_info_t *ptarget_info;
 	client_list_t *pclient_list;
 	bridge_hub_t *phub;
+	bridge_info_t bridge_info;
 }carrier_env_t;
 
 
@@ -245,6 +275,7 @@ typedef struct _inner_proto_t
 	union
 	{
 		char result;
+		char proc_name[PROC_ENTRY_NAME_LEN];
 		char verify_key[BRIDGE_PROC_CONN_VERIFY_KEY_LEN];
 	}data;
 }inner_proto_t;

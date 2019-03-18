@@ -891,6 +891,8 @@ static int dispatch_bridge(void)
 	int bridge_pack_len = 0;
 	unsigned int stlv_len = 0;
 	int ret = 0;
+	bridge_info_t *pbridge_info = &penv->bridge_info;
+	long curr_ts = time(NULL);
 
 	while(1)
 	{
@@ -944,6 +946,11 @@ static int dispatch_bridge(void)
 		if(!ptarget)
 		{
 			slog_log(slogd , SL_ERR , "%s failed! target %d not found!" , __FUNCTION__ , pstpack->pack_head.recver_id);
+			if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
+			{
+				pbridge_info->send.dropped++;
+				pbridge_info->send.latest_drop = curr_ts;
+			}
 			continue;
 		}
 
@@ -951,6 +958,11 @@ static int dispatch_bridge(void)
 		if(ptarget->connected != TARGET_CONN_DONE)
 		{
 			slog_log(slogd , SL_ERR , "%s failed! connection is lost. target:%d" , __FUNCTION__ , ptarget->proc_id);
+			if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
+			{
+				pbridge_info->send.dropped++;
+				pbridge_info->send.latest_drop = curr_ts;
+			}
 			continue;
 		}
 
@@ -960,17 +972,26 @@ static int dispatch_bridge(void)
 			slog_log(slogd , SL_INFO , "%s is sending old package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
 			ret = flush_target(ptarget , slogd);
 			if(ret < 0)	//出现无法恢复错误，则已经重置链接 丢弃当前包
+			{
+				pbridge_info->send.reset_connect++;
+				pbridge_info->send.latest_reset = curr_ts;
 				continue;
+			}
 		}
 
 		/***Send Current Pack*/
 		if(ptarget->tail > 0)	//如果缓冲区未空，则说明当前不能发送，在STLV包之后投入缓冲区
 		{
-			//剩余缓冲区空间不足以放入则丢弃了
+			//剩余缓冲区空间不足以放入则丢弃
 			if((sizeof(ptarget->main_buff) - ptarget->tail) < (STLV_PACK_SAFE_LEN(bridge_pack_len)))
 			{
 				slog_log(slogd , SL_ERR , "%s drop package. flush buff imcomplete. but target buff left space is too small! left:%d proper:%d" ,
 						__FUNCTION__ , sizeof(ptarget->main_buff) - ptarget->tail , STLV_PACK_SAFE_LEN(bridge_pack_len));
+				if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
+				{
+					pbridge_info->send.dropped++;
+					pbridge_info->send.latest_drop = curr_ts;
+				}
 				continue;
 			}
 
@@ -979,11 +1000,29 @@ static int dispatch_bridge(void)
 			if(stlv_len == 0)
 			{
 				slog_log(slogd , SL_ERR , "%s flush buff imcomplete and drop package for stlv pack failed!" , __FUNCTION__);
+				if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
+				{
+					pbridge_info->send.dropped++;
+					pbridge_info->send.latest_drop = curr_ts;
+				}
 				continue;
 			}
 
 			//upate
 			slog_log(slogd , SL_INFO , "%s flush buff imcomplete and saved to buff success!" , __FUNCTION__);
+
+			//只记录业务包
+			if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
+			{
+				pbridge_info->send.handled++;
+				pbridge_info->send.max_pkg_size = (pstpack->pack_head.data_len>pbridge_info->send.max_pkg_size)?pstpack->pack_head.data_len:pbridge_info->send.max_pkg_size;
+				if(pbridge_info->send.min_pkg_size <= 0)
+					pbridge_info->send.min_pkg_size = pstpack->pack_head.data_len;
+				else
+					pbridge_info->send.min_pkg_size = (pstpack->pack_head.data_len<pbridge_info->send.min_pkg_size)?pstpack->pack_head.data_len:pbridge_info->send.min_pkg_size;
+				pbridge_info->send.aver_pkg_size = (pbridge_info->send.aver_pkg_size*(pbridge_info->send.handled-1)+pstpack->pack_head.data_len)/pbridge_info->send.handled;
+			}
+
 			ptarget->tail += stlv_len;
 			continue;
 		}
@@ -993,16 +1032,38 @@ static int dispatch_bridge(void)
 		stlv_len = STLV_PACK_ARRAY(ptarget->buff , pstpack , bridge_pack_len);
 		if(stlv_len == 0)
 		{
+			if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
+			{
+				pbridge_info->send.dropped++;
+				pbridge_info->send.latest_drop = curr_ts;
+			}
 			slog_log(slogd , SL_ERR , "%s drop package for stlv pack failed!" , __FUNCTION__);
 			continue;
 		}
+
+		//记录业务包
+		//if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
+		//{
+			pbridge_info->send.handled++;
+			pbridge_info->send.max_pkg_size = (pstpack->pack_head.data_len>pbridge_info->send.max_pkg_size)?pstpack->pack_head.data_len:pbridge_info->send.max_pkg_size;
+			if(pbridge_info->send.min_pkg_size <= 0)
+				pbridge_info->send.min_pkg_size = pstpack->pack_head.data_len;
+			else
+				pbridge_info->send.min_pkg_size = (pstpack->pack_head.data_len<pbridge_info->send.min_pkg_size)?pstpack->pack_head.data_len:pbridge_info->send.min_pkg_size;
+			pbridge_info->send.aver_pkg_size = (pbridge_info->send.aver_pkg_size*(pbridge_info->send.handled-1)+pstpack->pack_head.data_len)/pbridge_info->send.handled;
+		//}
 
 		//发送
 		ptarget->tail = stlv_len;
 		ptarget->latest_ts = time(NULL);
 		ptarget->ready_count = 1;
 		slog_log(slogd , SL_INFO , "%s is sending curr package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
-		flush_target(ptarget , slogd);
+		ret = flush_target(ptarget , slogd);
+		if(ret < 0)
+		{
+			pbridge_info->send.reset_connect++;
+			pbridge_info->send.latest_reset = curr_ts;
+		}
 
 	}
 
@@ -1012,11 +1073,11 @@ static int dispatch_bridge(void)
 static int read_client_socket(int fd , bridge_hub_t *phub)
 {
 	char pack_buff[BRIDGE_PACK_LEN];
-	//carrier_msg_t carrier_msg;
 	proc_entry_t proc_entry;
 	//char *next_buff = NULL;
 	client_info_t *pclient = NULL;
 	bridge_package_t *recv_pkg = NULL;
+	bridge_info_t *pbridge_info = &penv->bridge_info;
 	int len = 0;
 	int space = 0;
 	int pos = 0;
@@ -1025,6 +1086,7 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 	unsigned int value_len = 0;
 	int info;
 	int i = 0;
+	long curr_ts = time(NULL);
 
 	/***Search Client Info*/
 	pclient = client_list.list;
@@ -1067,6 +1129,8 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 				//other other close fd
 				slog_log(slogd , SL_ERR , "%s failed! err:%s and try to close connection. %d<%s:%d>" , __FUNCTION__ , strerror(errno) ,
 						fd , pclient->client_ip , pclient->client_port);
+				pbridge_info->recv.reset_connect++;
+				pbridge_info->recv.latest_reset = curr_ts;
 				free_client_info(pclient);
 			break;
 			}
@@ -1088,6 +1152,8 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 
 			send_carrier_msg(&carrier_env , CR_MSG_ERROR , MSG_ERR_T_LOST_CONN , &proc_entry , NULL);
 			/*release client_info*/
+			pbridge_info->recv.reset_connect++;
+			pbridge_info->recv.latest_reset = curr_ts;
 			free_client_info(pclient);
 			break;
 		}
@@ -1116,6 +1182,8 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 				{
 					slog_log(slogd , SL_ERR , "<%s> failed! recv buff not enoght?! wtf!! it may be from wrong source! now try to close  connection. %d<%s:%d>" , __FUNCTION__ ,
 													fd , pclient->client_ip , pclient->client_port);
+					pbridge_info->recv.reset_connect++;
+					pbridge_info->recv.latest_reset = curr_ts;
 					free_client_info(pclient);
 					return -1;
 				}
@@ -1124,6 +1192,8 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 				{
 					slog_log(slogd , SL_ERR , "<%s> failed! check sum error! it may be from wrong source! now try to close  connection. %d<%s:%d>" , __FUNCTION__ ,
 								fd , pclient->client_ip , pclient->client_port);
+					pbridge_info->recv.reset_connect++;
+					pbridge_info->recv.latest_reset = curr_ts;
 					free_client_info(pclient);
 					return -1;
 				}
@@ -1139,6 +1209,16 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 			slog_log(slogd , SL_DEBUG , "%s recv an pack! value:%d pack_len:%d pos:%d tail:%d. src:%d dest:%d pkg_type:%d" , __FUNCTION__ , value_len , pack_len ,
 					pos , pclient->tail , recv_pkg->pack_head.sender_id , recv_pkg->pack_head.recver_id , recv_pkg->pack_head.pkg_type);
 
+			//记录包数据.[内部协议不进入统计]
+						pbridge_info->recv.handled++;
+						pbridge_info->recv.max_pkg_size = (recv_pkg->pack_head.data_len>pbridge_info->recv.max_pkg_size)?recv_pkg->pack_head.data_len:pbridge_info->recv.max_pkg_size;
+						if(pbridge_info->recv.min_pkg_size <= 0)
+							pbridge_info->recv.min_pkg_size = recv_pkg->pack_head.data_len;
+						else
+							pbridge_info->recv.min_pkg_size = (recv_pkg->pack_head.data_len<pbridge_info->recv.min_pkg_size)?recv_pkg->pack_head.data_len:pbridge_info->recv.min_pkg_size;
+						pbridge_info->recv.aver_pkg_size = (pbridge_info->recv.aver_pkg_size*(pbridge_info->recv.handled-1)+recv_pkg->pack_head.data_len)/pbridge_info->recv.handled;
+
+
 			//check manage
 			//if (carrier_env.proc_id <= MANAGER_PROC_ID_MAX && value_len==GET_PACK_LEN(sizeof(carrier_msg_t)))
 			if(recv_pkg->pack_head.pkg_type==BRIDGE_PKG_TYPE_CR_MSG)
@@ -1147,6 +1227,7 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 				continue;	//no need to dispatch to channel
 			}
 
+
 			//check inner-proto
 			if(recv_pkg->pack_head.pkg_type == BRIDGE_PKG_TYPE_INNER_PROTO)
 			{
@@ -1154,17 +1235,47 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 				continue;
 			}
 
+			//check verify
+			if(!pclient->verify)
+			{
+				slog_log(slogd , SL_ERR , "<%s> recved from no-verfiy client. will close %d<%s:%d>" , __FUNCTION__ , fd , pclient->client_ip ,
+						pclient->client_port);
+				pbridge_info->recv.reset_connect++;
+				pbridge_info->recv.latest_reset = curr_ts;
+				free_client_info(pclient);
+				return -1;
+			}
+
+			//记录包数据.[内部协议不进入统计]
+			/*
+			pbridge_info->recv.handled++;
+			pbridge_info->recv.max_pkg_size = (recv_pkg->pack_head.data_len>pbridge_info->recv.max_pkg_size)?recv_pkg->pack_head.data_len:pbridge_info->recv.max_pkg_size;
+			if(pbridge_info->recv.min_pkg_size <= 0)
+				pbridge_info->recv.min_pkg_size = recv_pkg->pack_head.data_len;
+			else
+				pbridge_info->recv.min_pkg_size = (recv_pkg->pack_head.data_len<pbridge_info->recv.min_pkg_size)?recv_pkg->pack_head.data_len:pbridge_info->recv.min_pkg_size;
+			pbridge_info->recv.aver_pkg_size = (pbridge_info->recv.aver_pkg_size*(pbridge_info->recv.handled-1)+recv_pkg->pack_head.data_len)/pbridge_info->recv.handled;
+			*/
+
 			//dispatch
 			ret = append_recv_channel(phub , pack_buff);
 			if(ret == 0)
 				slog_log(slogd , SL_VERBOSE , "%s >>Read From Socket and dispatch pack to Bridge success! type:%d,length:%d,src:%d,recv:%d,data_len:%d" , __FUNCTION__ , info , value_len , ((bridge_package_t*)pack_buff)->pack_head.sender_id ,
 								((bridge_package_t*)pack_buff)->pack_head.recver_id , ((bridge_package_t*)pack_buff)->pack_head.data_len);
 			else if (ret == -1)
+			{
 				slog_log(slogd , SL_ERR , "%s >>Read From Socket and dispatch pack to Bridge failed for err! type:%d,length:%d,src:%d,recv:%d,data_len:%d" , __FUNCTION__ , info , value_len , ((bridge_package_t*)pack_buff)->pack_head.sender_id ,
 								((bridge_package_t*)pack_buff)->pack_head.recver_id , ((bridge_package_t*)pack_buff)->pack_head.data_len);
+				pbridge_info->recv.dropped++;
+				pbridge_info->recv.latest_drop = curr_ts;
+			}
 			else
+			{
 				slog_log(slogd , SL_ERR , "%s >>Read From Socket and dispatch pack to Bridge failed for channel full! type:%d,length:%d,src:%d,recv:%d,data_len:%d" , __FUNCTION__ , info , value_len , ((bridge_package_t*)pack_buff)->pack_head.sender_id ,
 								((bridge_package_t*)pack_buff)->pack_head.recver_id , ((bridge_package_t*)pack_buff)->pack_head.data_len);
+				pbridge_info->recv.dropped++;
+				pbridge_info->recv.latest_drop = curr_ts;
+			}
 		}
 
 		//修正缓冲区
@@ -2184,7 +2295,7 @@ static int check_client_info(carrier_env_t *penv)
 	client_info_t *pclient = NULL;
 	int slogd = penv->slogd;
 
-	if((curr_ts-last_check) < 10)
+	if((curr_ts-last_check) < 5)
 		return 0;
 	last_check = curr_ts;
 

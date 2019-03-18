@@ -52,13 +52,14 @@ extern int send_to_bridge(int bd , int target_id , char *sending_data , int len)
  * @target_id:目标服务进程的全局ID
  * @recv_buff:接收数据缓冲区
  * @recv_len:接收缓冲区长度
+ * @drop_time: >=0丢弃发送时间超过drop_time(秒)的包; -1:不丢弃任何包
  * @return:
  * -1：错误
  * -2：接收缓冲区空
  * -3：接收数据超出包长
  * else:实际接收的长度
  */
-extern int recv_from_bridge(int bd , char *recv_buff , int recv_len);
+extern int recv_from_bridge(int bd , char *recv_buff , int recv_len , int drop_time);
 
 
 /*

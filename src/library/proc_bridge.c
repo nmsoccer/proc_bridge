@@ -41,7 +41,7 @@ static proc_bridge_env_t proc_bridge_env = {0 , 0 , NULL};
 /*************STATIC FUNC************/
 static bridge_hub_t *_open_bridge(char *name_space , int proc_id , int slogd);
 static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_data , int len , int slogd);
-static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len , int slogd);
+static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len , int slogd , int drop_time);
 static int _close_bridge(bridge_hub_t *phub , int slogd);
 /****************END****************/
 
@@ -263,13 +263,14 @@ int send_to_bridge(int bd , int target_id , char *sending_data , int len)
  * @target_id:目标服务进程的全局ID
  * @recv_buff:接收数据缓冲区
  * @recv_len:接收缓冲区长度
+ * @drop_time: >=0丢弃发送时间超过drop_time(秒)的包; -1:不丢弃任何包
  * @return:
  * -1：错误
  * -2：接收缓冲区空
  * -3：接收数据超出包长
  * else:实际接收的长度
  */
-int recv_from_bridge(int bd , char *recv_buff , int recv_len)
+int recv_from_bridge(int bd , char *recv_buff , int recv_len , int drop_time)
 {
 	proc_bridge_env_t *penv = &proc_bridge_env;
 	proc_bridge_space_t *pspace = NULL;
@@ -277,15 +278,12 @@ int recv_from_bridge(int bd , char *recv_buff , int recv_len)
 	/***Arg Check*/
 	if(bd < 0 || !recv_buff || recv_len<= 0)
 	{
-		//slog_log(slogd , SL_ERR , "<%s> failed! arg error. bridge_descriptor:%d , recv:0x%X  illegal!" , __FUNCTION__ , bd , recv_buff);
 		return -1;
 	}
 
 	/***Get Space*/
 	if(penv->space_count<=0 || penv->valid_count<=0 || bd>=penv->space_count)
 	{
-		//slog_log(slogd , SL_ERR , "<%s> failed! bd illegal! space_count:%d valid:%d bd:%d" , __FUNCTION__ , penv->space_count , penv->valid_count ,
-		//		bd);
 		return -1;
 	}
 
@@ -293,11 +291,10 @@ int recv_from_bridge(int bd , char *recv_buff , int recv_len)
 	/***Check Space*/
 	if(pspace->opened_id != bd)
 	{
-		//slog_log(slogd , SL_ERR , "<%s> failed! descriptor not match! %d != %d" , __FUNCTION__ , pspace->opened_id , bd);
 		return -1;
 	}
 
-	return _recv_from_bridge(pspace->phub , recv_buff , recv_len , pspace->slogd);
+	return _recv_from_bridge(pspace->phub , recv_buff , recv_len , pspace->slogd , drop_time);
 }
 
 /*
@@ -558,13 +555,14 @@ static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_da
  * @recv_buff:接收数据缓冲区
  * @recv_len:接收缓冲区长度
  * @slogd:slog的描述句柄
+ * @drop_time: >=0丢弃发送时间超过drop_time(秒)的包; -1:不丢弃任何包
  * @return:
  * -1：错误
  * -2：接收缓冲区空
  * -3：接收数据超出包长
  * else:实际接收的长度
  */
-static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len , int slogd)
+static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len , int slogd , int drop_time)
 {
 	char *recv_channel = NULL;
 	bridge_package_t *pstpack;
@@ -572,9 +570,12 @@ static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len
 	int copyed = 0;
 
 	int head_pos = 0;
+	int tail_pos = 0;
 	int channel_len = 0;
 	int pack_len = 0;
 	int data_len = 0;
+	char should_copy = 1;
+	long curr_ts = time(NULL);
 
 	/***Arg Check*/
 	if(!phub ||!recv_buff)
@@ -582,21 +583,24 @@ static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len
 		slog_log(slogd , SL_ERR ,"%s failed for illegal arg!" , __FUNCTION__);
 		return -1;
 	}
-	recv_channel = GET_RECV_CHANNEL(phub);
 
+	recv_channel = GET_RECV_CHANNEL(phub);
+	head_pos = phub->recv_head;
+	tail_pos = phub->recv_tail;
+
+_recv_again:
 	/***接收*/
 	//1.检查接收区是否有数据
-	//if(phub->recv_full == 0 && phub->recv_head==phub->recv_tail)
-	if(phub->recv_head == phub->recv_tail)
+	if(head_pos == tail_pos)
 	{
-		//slog_log(slogd , SL_DEBUG , "%s failed for no data." , __FUNCTION__);
 		return -2;
 	}
+
 
 	//接收时不做包结构完整性检查，默认缓冲区里都是结构完整的包，这是由send时保证
 	channel_len = phub->recv_buff_size;
 	pack_len = sizeof(bridge_package_t);
-	head_pos = phub->recv_head;
+	//head_pos = phub->recv_head;
 
 	//2.先读取头部区
 	if((channel_len - head_pos) < pack_len)	/*余下不足头部*/
@@ -616,9 +620,16 @@ static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len
 	//3.获得头部后
 	pstpack = (bridge_package_t *)buff;
 	data_len = pstpack->pack_head.data_len;
+	should_copy = 1;
+	if(drop_time>=0 && ((curr_ts-pstpack->pack_head.send_ts)>=drop_time))
+	{
+		slog_log(slogd , SL_INFO , "<%s> will drop package out drop_time:%d curr:%ld send:%ld" , __FUNCTION__ , drop_time , curr_ts ,
+				pstpack->pack_head.send_ts);
+		should_copy = 0;
+	}
 
 	//3.5检查缓冲区长度
-	if(data_len > recv_len)
+	if(data_len > recv_len && should_copy)
 	{
 		slog_log(slogd , SL_ERR , "<%s> failed! data len:%d is bigger than recv_len:%d" , __FUNCTION__ , data_len , recv_len);
 		return -3;
@@ -629,13 +640,17 @@ static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len
 	if((channel_len - head_pos) < data_len)	/*余下不足放数据*/
 	{
 		copyed = channel_len - phub->recv_head;
-		memcpy(recv_buff , &recv_channel[head_pos] , copyed);
-		memcpy(&recv_buff[copyed] , &recv_channel[0] , data_len-copyed);
+		if(should_copy)
+		{
+			memcpy(recv_buff , &recv_channel[head_pos] , copyed);
+			memcpy(&recv_buff[copyed] , &recv_channel[0] , data_len-copyed);
+		}
 		head_pos = 0 + data_len - copyed;
 	}
 	else	/*余下可以放下数据*/
 	{
-		memcpy(recv_buff , &recv_channel[head_pos] , data_len);
+		if(should_copy)
+			memcpy(recv_buff , &recv_channel[head_pos] , data_len);
 		head_pos += data_len;
 		head_pos %= channel_len;
 	}
@@ -643,7 +658,11 @@ static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len
 	//4.在读完该内存之后再修改位置指针，因为write会比较head指针位置.否则会出现同步错误
 	phub->recving_count--;
 	phub->recv_head = head_pos;
-	//return pstpack->pack_head.sender_id;
+
+	//5.本次未发生数据拷贝则读取下一包
+	if(!should_copy)
+		goto _recv_again;
+
 	return data_len;
 }
 

@@ -3,18 +3,16 @@
 #BIN_FILES=("manager" "creater" "deleter" "carrier" "tester")
 BIN_FILES=("manager" "creater" "deleter" "carrier")
 LIB_FILE="./carrier_lib.c ../library/proc_bridge.c"
-LIB_FILE="./carrier_lib.c"
 HEADER_FILE="../library/"
-DYN_LIBS="-Wl,-Bstatic -lslog -Wl,-Bdynamic -lstlv -lproc_bridge -lm"
+DYN_LIBS="-Wl,-Bstatic -lslog -Wl,-Bdynamic -lstlv -lm"
 
 function make()
 {
   echo "compiling..."
-  gcc -g -w -I${HEADER_FILE} bridge_manager.c ${LIB_FILE} ${DYN_LIBS} -o manager
+  gcc -g -Wall -I${HEADER_FILE} bridge_manager.c ${LIB_FILE} ${DYN_LIBS} -o manager
   gcc -g -w -I${HEADER_FILE} create_bridge.c ${LIB_FILE} ${DYN_LIBS} -o creater
   gcc -g -w -I${HEADER_FILE} delete_bridge.c ${LIB_FILE} ${DYN_LIBS} -o deleter
   gcc -g -Wall -I${HEADER_FILE} bridge_carrier.c ${LIB_FILE} ${DYN_LIBS} -o carrier
-  #gcc -g -w -I${HEADER_FILE} test_proc.c ${LIB_FILE} ${DYN_LIBS} -o tester
   #gcc -g -Wall test_proc.c -lslog -lstlv -lproc_bridge -lm  -o tester
   echo "compiling finish"
 }
