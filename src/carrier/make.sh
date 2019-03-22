@@ -4,7 +4,7 @@
 BIN_FILES=("manager" "creater" "deleter" "carrier")
 LIB_FILE="./carrier_lib.c ../library/proc_bridge.c"
 HEADER_FILE="../library/"
-DYN_LIBS="-Wl,-Bstatic -lslog -Wl,-Bdynamic -lstlv -lm"
+DYN_LIBS="-Wl,-Bstatic -lslog -Wl,-Bdynamic -lstlv -lm -lrt"
 
 function make()
 {

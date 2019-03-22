@@ -73,6 +73,7 @@ int main(int argc , char **argv)
 	int opt;
 	int ret;
 	int slogd;
+	int flags = 0;
 
 	/***Init*/
 	memset(penv , 0 , sizeof(carrier_manager_env_t));
@@ -143,10 +144,39 @@ int main(int argc , char **argv)
 	slog_log(slogd , SL_INFO , "open bridge success! bd:%d" , penv->bd);
 
 	/***Create Pipe*/
-	ret = pipe2(penv->fd , O_NONBLOCK);
+	//ret = pipe2(penv->fd , O_NONBLOCK);
+	ret = pipe(penv->fd);
 	if(ret < 0)
 	{
 		slog_log(slogd , SL_ERR , "create pipe failed! err:%s" , strerror(errno));
+		return -1;
+	}
+		//non-block pipe[0]
+	flags = fcntl(penv->fd[0] , F_GETFL);
+	if(flags < 0)
+	{
+		slog_log(slogd , SL_ERR , "get pipe0 flags failed! err:%s" , strerror(errno));
+		return -1;
+	}
+	flags |= O_NONBLOCK;
+	ret = fcntl(penv->fd[0] , F_SETFL , flags);
+	if(ret < 0)
+	{
+		slog_log(slogd , SL_ERR , "set pipe0 non-block failed! err:%s" , strerror(errno));
+		return -1;
+	}
+		//non-block pipe[1]
+	flags = fcntl(penv->fd[1] , F_GETFL);
+	if(flags < 0)
+	{
+		slog_log(slogd , SL_ERR , "get pipe1 flags failed! err:%s" , strerror(errno));
+		return -1;
+	}
+	flags |= O_NONBLOCK;
+	ret = fcntl(penv->fd[1] , F_SETFL , flags);
+	if(ret < 0)
+	{
+		slog_log(slogd , SL_ERR , "set pipe1 non-block failed! err:%s" , strerror(errno));
 		return -1;
 	}
 

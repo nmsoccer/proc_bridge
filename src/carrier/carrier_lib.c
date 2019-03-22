@@ -423,7 +423,6 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 	int ret = -1;
 	char select_all = 0;
 	char found = 0;
-	int i = 0;
 
 	/***Arg Check*/
 	if(!penv || !package)

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * bridge_carrier.c
  *
  * 每一个proc对应的守护进程
