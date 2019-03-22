@@ -65,4 +65,6 @@ A distributed inter-proc communication system
 ![如图所示](https://github.com/nmsoccer/proc_bridge/blob/master/pic/proc_bridge_node.png)  
 各名词的基本含义如上图所示.
 这里放大了db_server通信节点的构造，并且列出了【namespace】,【proc_id】,【proc_name】,【ip,port】等的作用域。其中【proc_name】也叫db_server，这个是对业务进程 _dbserver_ 的一个显性描述，业务进程可以叫任意名字，这里的【proc_name】只约束到lower层  
-# to be continue
+
+# MORE
+更多详细配置和使用说明请查看:https://github.com/nmsoccer/proc_bridge/wiki
