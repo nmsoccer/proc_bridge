@@ -84,8 +84,9 @@ static int manage_tick_print();
 static int print_bridge_info(bridge_hub_t *phub);
 static int set_sock_option(int sock_fd , int send_size , int recv_size , int no_delay);
 static int check_client_info(carrier_env_t *penv);
+static int check_run_statistics(carrier_env_t *penv);
 
-static bridge_hub_t *phub = NULL;
+//static bridge_hub_t *phub = NULL;
 static int epoll_fd;
 
 int main(int argc , char **argv)
@@ -259,16 +260,17 @@ int main(int argc , char **argv)
 
 	/***打开bridge*/
 	ret = open_bridge(penv->name_space , penv->proc_id , slogd);
-	phub = bd2bridge(ret);
+	penv->phub = bd2bridge(ret);
 	//phub = attach_bridge(penv->name_space , penv->proc_id , slogd);
-	if(phub == NULL)
+	if(penv->phub == NULL)
 	{
 		slog_log(slogd , SL_ERR , "Error: open bridge failed!");
 		slog_close(slogd);
 		return 0;
 	}
-	memset(phub->proc_name , 0 , strlen(phub->proc_name));
-	strncpy(phub->proc_name , penv->proc_name , sizeof(phub->proc_name));
+	//penv->phub = phub;
+	memset(penv->phub->proc_name , 0 , strlen(penv->phub->proc_name));
+	strncpy(penv->phub->proc_name , penv->proc_name , sizeof(penv->phub->proc_name));
 	slog_log(slogd, SL_INFO , "Main:open bridge success!");
 
 		//print
@@ -345,7 +347,6 @@ int main(int argc , char **argv)
 		//basic info
 		penv->pmanager->stat = MANAGE_STAT_INIT;
 		penv->pmanager->penv = penv;
-		penv->phub = phub;
 
 		//msg log
 		memset(&slog_option , 0 , sizeof(slog_option));
@@ -383,6 +384,7 @@ int main(int argc , char **argv)
 
 	/***Started*/
 	penv->started_ts = time(NULL);
+	srand(penv->started_ts);
 	slog_log(slogd , SL_INFO , "bridge_carrier carry proc %d,run on %s:%d success!" , penv->proc_id , "127.0.0.1" , proc_port+CARRIER_PORT_ADD);
 	/***Main Logic*/
 	while(1)
@@ -499,7 +501,7 @@ int main(int argc , char **argv)
 			if(ep_event_list[i].events & EPOLLIN)
 			{
 				//read msg
-				read_client_socket(handle_fd , phub);
+				read_client_socket(handle_fd , penv->phub);
 			}
 
 		}
@@ -537,7 +539,7 @@ static void handle_signal(int sig)
 		break;
 	case SIGUSR2:
 		slog_log(slogd , SL_INFO , "Main:Recv USR2 SIGNAL, please check channel.info!");
-		print_bridge_info(phub);
+		print_bridge_info(penv->phub);
 		return;
 	case SIGUSR1:
 		slog_log(slogd , SL_INFO , "-----------------------Begin to Reload Cfg-------------------");
@@ -736,7 +738,7 @@ static int connect_to_remote(void)
 	{
 		return 0;
 	}
-	if((curr_ts-carrier_env.started_ts) >= 30)	//进程拉起前30秒不用上报，等待路由建立
+	if((curr_ts-carrier_env.started_ts) >= 20)	//进程拉起前20秒不用上报，等待路由建立
 	{
 		if(need_report == 0)
 		{
@@ -887,6 +889,7 @@ static int dispatch_bridge(void)
 {
 	bridge_package_t *pstpack;
 	target_detail_t *ptarget = NULL;
+	conn_traffic_t *ptraffic = NULL;
 	char bridge_pack[BRIDGE_PACK_LEN];
 	int bridge_pack_len = 0;
 	unsigned int stlv_len = 0;
@@ -898,7 +901,7 @@ static int dispatch_bridge(void)
 	{
 		/**Fetch a Pack*/
 		pstpack = (bridge_package_t *)bridge_pack;
-		bridge_pack_len = fetch_send_channel(phub , bridge_pack);
+		bridge_pack_len = fetch_send_channel(penv->phub , bridge_pack);
 		if(bridge_pack_len == -1)
 		{
 			slog_log(slogd , SL_ERR , "%s fetch package failed for err!" , __FUNCTION__);
@@ -954,6 +957,7 @@ static int dispatch_bridge(void)
 			continue;
 		}
 
+		ptraffic = &ptarget->traffic;
 		/***Check Target Stat*/
 		if(ptarget->connected != TARGET_CONN_DONE)
 		{
@@ -963,6 +967,8 @@ static int dispatch_bridge(void)
 				pbridge_info->send.dropped++;
 				pbridge_info->send.latest_drop = curr_ts;
 			}
+			ptraffic->dropped++;
+			ptraffic->latest_drop = curr_ts;
 			continue;
 		}
 
@@ -977,6 +983,8 @@ static int dispatch_bridge(void)
 				pbridge_info->send.latest_reset = curr_ts;
 				continue;
 			}
+			ptraffic->reset++;
+			ptraffic->latest_reset = curr_ts;
 		}
 
 		/***Send Current Pack*/
@@ -992,6 +1000,8 @@ static int dispatch_bridge(void)
 					pbridge_info->send.dropped++;
 					pbridge_info->send.latest_drop = curr_ts;
 				}
+				ptraffic->dropped++;
+				ptraffic->latest_drop = curr_ts;
 				continue;
 			}
 
@@ -1005,6 +1015,8 @@ static int dispatch_bridge(void)
 					pbridge_info->send.dropped++;
 					pbridge_info->send.latest_drop = curr_ts;
 				}
+				ptraffic->dropped++;
+				ptraffic->latest_drop = curr_ts;
 				continue;
 			}
 
@@ -1020,8 +1032,17 @@ static int dispatch_bridge(void)
 					pbridge_info->send.min_pkg_size = pstpack->pack_head.data_len;
 				else
 					pbridge_info->send.min_pkg_size = (pstpack->pack_head.data_len<pbridge_info->send.min_pkg_size)?pstpack->pack_head.data_len:pbridge_info->send.min_pkg_size;
-				pbridge_info->send.aver_pkg_size = (pbridge_info->send.aver_pkg_size*(pbridge_info->send.handled-1)+pstpack->pack_head.data_len)/pbridge_info->send.handled;
+				pbridge_info->send.ave_pkg_size = (pbridge_info->send.ave_pkg_size*(pbridge_info->send.handled-1)+pstpack->pack_head.data_len)/pbridge_info->send.handled;
 			}
+			//单条链接记录所有包
+			ptraffic->handled++;
+			ptraffic->max_size = (pstpack->pack_head.data_len>ptraffic->max_size)?pstpack->pack_head.data_len:ptraffic->max_size;
+			if(ptraffic->min_size <= 0)
+				ptraffic->min_size = pstpack->pack_head.data_len;
+			else
+				ptraffic->min_size = (pstpack->pack_head.data_len<ptraffic->min_size)?pstpack->pack_head.data_len:ptraffic->min_size;
+			ptraffic->ave_size = (ptraffic->ave_size*(ptraffic->handled-1)+pstpack->pack_head.data_len)/ptraffic->handled;
+
 
 			ptarget->tail += stlv_len;
 			continue;
@@ -1037,21 +1058,31 @@ static int dispatch_bridge(void)
 				pbridge_info->send.dropped++;
 				pbridge_info->send.latest_drop = curr_ts;
 			}
+			ptraffic->dropped++;
+			ptraffic->latest_drop = curr_ts;
 			slog_log(slogd , SL_ERR , "%s drop package for stlv pack failed!" , __FUNCTION__);
 			continue;
 		}
 
 		//记录业务包
-		//if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
-		//{
+		if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
+		{
 			pbridge_info->send.handled++;
 			pbridge_info->send.max_pkg_size = (pstpack->pack_head.data_len>pbridge_info->send.max_pkg_size)?pstpack->pack_head.data_len:pbridge_info->send.max_pkg_size;
 			if(pbridge_info->send.min_pkg_size <= 0)
 				pbridge_info->send.min_pkg_size = pstpack->pack_head.data_len;
 			else
 				pbridge_info->send.min_pkg_size = (pstpack->pack_head.data_len<pbridge_info->send.min_pkg_size)?pstpack->pack_head.data_len:pbridge_info->send.min_pkg_size;
-			pbridge_info->send.aver_pkg_size = (pbridge_info->send.aver_pkg_size*(pbridge_info->send.handled-1)+pstpack->pack_head.data_len)/pbridge_info->send.handled;
-		//}
+			pbridge_info->send.ave_pkg_size = (pbridge_info->send.ave_pkg_size*(pbridge_info->send.handled-1)+pstpack->pack_head.data_len)/pbridge_info->send.handled;
+		}
+		//单条链接记录所有包
+		ptraffic->handled++;
+		ptraffic->max_size = (pstpack->pack_head.data_len>ptraffic->max_size)?pstpack->pack_head.data_len:ptraffic->max_size;
+		if(ptraffic->min_size <= 0)
+			ptraffic->min_size = pstpack->pack_head.data_len;
+		else
+			ptraffic->min_size = (pstpack->pack_head.data_len<ptraffic->min_size)?pstpack->pack_head.data_len:ptraffic->min_size;
+		ptraffic->ave_size = (ptraffic->ave_size*(ptraffic->handled-1)+pstpack->pack_head.data_len)/ptraffic->handled;
 
 		//发送
 		ptarget->tail = stlv_len;
@@ -1063,6 +1094,9 @@ static int dispatch_bridge(void)
 		{
 			pbridge_info->send.reset_connect++;
 			pbridge_info->send.latest_reset = curr_ts;
+
+			ptraffic->reset++;
+			ptraffic->latest_reset = curr_ts;
 		}
 
 	}
@@ -1209,6 +1243,7 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 			slog_log(slogd , SL_DEBUG , "%s recv an pack! value:%d pack_len:%d pos:%d tail:%d. src:%d dest:%d pkg_type:%d" , __FUNCTION__ , value_len , pack_len ,
 					pos , pclient->tail , recv_pkg->pack_head.sender_id , recv_pkg->pack_head.recver_id , recv_pkg->pack_head.pkg_type);
 
+			/*just test
 			//记录包数据.[内部协议不进入统计]
 						pbridge_info->recv.handled++;
 						pbridge_info->recv.max_pkg_size = (recv_pkg->pack_head.data_len>pbridge_info->recv.max_pkg_size)?recv_pkg->pack_head.data_len:pbridge_info->recv.max_pkg_size;
@@ -1217,7 +1252,7 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 						else
 							pbridge_info->recv.min_pkg_size = (recv_pkg->pack_head.data_len<pbridge_info->recv.min_pkg_size)?recv_pkg->pack_head.data_len:pbridge_info->recv.min_pkg_size;
 						pbridge_info->recv.aver_pkg_size = (pbridge_info->recv.aver_pkg_size*(pbridge_info->recv.handled-1)+recv_pkg->pack_head.data_len)/pbridge_info->recv.handled;
-
+			*/
 
 			//check manage
 			//if (carrier_env.proc_id <= MANAGER_PROC_ID_MAX && value_len==GET_PACK_LEN(sizeof(carrier_msg_t)))
@@ -1246,16 +1281,14 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 				return -1;
 			}
 
-			//记录包数据.[内部协议不进入统计]
-			/*
+			//记录业务包数据.[内部协议不进入统计]
 			pbridge_info->recv.handled++;
 			pbridge_info->recv.max_pkg_size = (recv_pkg->pack_head.data_len>pbridge_info->recv.max_pkg_size)?recv_pkg->pack_head.data_len:pbridge_info->recv.max_pkg_size;
 			if(pbridge_info->recv.min_pkg_size <= 0)
 				pbridge_info->recv.min_pkg_size = recv_pkg->pack_head.data_len;
 			else
 				pbridge_info->recv.min_pkg_size = (recv_pkg->pack_head.data_len<pbridge_info->recv.min_pkg_size)?recv_pkg->pack_head.data_len:pbridge_info->recv.min_pkg_size;
-			pbridge_info->recv.aver_pkg_size = (pbridge_info->recv.aver_pkg_size*(pbridge_info->recv.handled-1)+recv_pkg->pack_head.data_len)/pbridge_info->recv.handled;
-			*/
+			pbridge_info->recv.ave_pkg_size = (pbridge_info->recv.ave_pkg_size*(pbridge_info->recv.handled-1)+recv_pkg->pack_head.data_len)/pbridge_info->recv.handled;
 
 			//dispatch
 			ret = append_recv_channel(phub , pack_buff);
@@ -1484,8 +1517,9 @@ static int world_tick()
 	connect_to_remote();
 	if(penv->proc_id <= MANAGER_PROC_ID_MAX)	//manager
 		manage_tick_print();
-	check_bridge(phub);
+	check_bridge(penv->phub);
 	check_client_info(penv);
+	check_run_statistics(penv);
 	return 0;
 }
 
@@ -2255,7 +2289,7 @@ static int manage_tick_print()
 static int check_bridge(bridge_hub_t *phub)
 {
 	struct shmid_ds buff;
-	static long last_check = 0;
+	static long last_check = 0;  //初始检查时间
 	long curr_ts = 0;
 	int ret = -1;
 
@@ -2318,5 +2352,43 @@ _try_del_client:
 		pclient = pclient->next;
 	}
 
+	return 0;
+}
+
+static int check_run_statistics(carrier_env_t *penv)
+{
+	msg_event_stat_t stat_event;
+	static long last_check = 0;
+	long curr_ts = time(NULL);
+	int ret = -1;
+
+	if((curr_ts- last_check) < 10)
+		return 0;
+	last_check = curr_ts;
+
+	//event
+	memset(&stat_event , 0 , sizeof(msg_event_stat_t));
+
+	//fill data
+	memcpy(&stat_event.bridge_info , &penv->bridge_info , sizeof(bridge_info_t));
+
+	//some info
+	stat_event.bridge_info.send.total_size = penv->phub->send_buff_size;
+	stat_event.bridge_info.send.head = penv->phub->send_head;
+	stat_event.bridge_info.send.tail = penv->phub->send_tail;
+	stat_event.bridge_info.send.handing = penv->phub->sending_count;
+
+	stat_event.bridge_info.recv.total_size = penv->phub->recv_buff_size;
+	stat_event.bridge_info.recv.head = penv->phub->recv_head;
+	stat_event.bridge_info.recv.tail = penv->phub->recv_tail;
+	stat_event.bridge_info.recv.handing = penv->phub->recving_count;
+
+	//send
+	ret = send_carrier_msg(penv , CR_MSG_EVENT , MSG_EVENT_T_REPORT_STATISTICS , &stat_event , NULL);
+	if(ret < 0)
+	{
+		slog_log(penv->slogd , SL_ERR , "<%s> send msg failed!" , __FUNCTION__);
+		return -1;
+	}
 	return 0;
 }

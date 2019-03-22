@@ -368,6 +368,13 @@ int send_inner_proto(carrier_env_t *penv , target_detail_t *ptarget , int proto 
 	case INNER_PROTO_VERIFY_REQ:
 		strncpy(preq->data.verify_key , (char *)arg1 , sizeof(preq->data.verify_key));
 		break;
+	case INNER_PROTO_CONN_TRAFFIC_REQ:
+		strncpy(preq->arg , (char *)arg1 , sizeof(preq->arg));
+		break;
+	case INNER_PROTO_CONN_TRAFFIC_RSP:
+		strncpy(preq->arg , (char *)arg1 , sizeof(preq->arg));
+		memcpy(&preq->data.traffic_list , (traffic_list_t *)arg2 , sizeof(traffic_list_t));
+		break;
 	default:
 		slog_log(slogd , SL_ERR , "<%s> failed! proto:%d illegal!" , __FUNCTION__ , proto);
 		return -1;
@@ -399,9 +406,14 @@ int send_inner_proto(carrier_env_t *penv , target_detail_t *ptarget , int proto 
  */
 int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *package)
 {
+	traffic_list_t traffic_list;
+
+	char arg[MANAGER_CMD_ARG_LEN] = {0};
+	char *ptmp = NULL;
 	bridge_package_t *ppkg = NULL;
 	inner_proto_t *preq = NULL;
 	target_detail_t *ptarget = NULL;
+	target_detail_t *ptarget_from = NULL;
 
 	char bridge_pack_buff[GET_PACK_LEN(sizeof(manager_cmd_rsp_t))] = {0};
 	bridge_package_t *pbridge_pkg;
@@ -409,6 +421,9 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 	cmd_proto_rsp_t *pproto_rsp;
 	int slogd = -1;
 	int ret = -1;
+	char select_all = 0;
+	char found = 0;
+	int i = 0;
 
 	/***Arg Check*/
 	if(!penv || !package)
@@ -432,7 +447,7 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 	pproto_rsp = &prsp->data.proto;
 
 	/***Handle*/
-	slog_log(slogd , SL_DEBUG , "<%s> proto:%d src:%d ts:%ld" , __FUNCTION__  , preq->type , ppkg->pack_head.sender_id ,
+	slog_log(slogd , SL_INFO , "<%s> proto:%d src:%d ts:%ld" , __FUNCTION__  , preq->type , ppkg->pack_head.sender_id ,
 			ppkg->pack_head.send_ts);
 
 	switch(preq->type)
@@ -440,15 +455,15 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 	case INNER_PROTO_PING:
 		if(!pclient->verify)
 			break;
-		ptarget = proc_id2_target(penv->ptarget_info , pclient->proc_id);	//get target
-		if(!ptarget || ptarget->connected!=TARGET_CONN_DONE)
+		ptarget_from = proc_id2_target(penv->ptarget_info , pclient->proc_id);	//get target
+		if(!ptarget_from || ptarget_from->connected!=TARGET_CONN_DONE)
 		{
 			slog_log(slogd , SL_ERR , "<%s> Connection from Ping:%d may not ready!" , __FUNCTION__ , pclient->proc_id);
 			break;
 		}
 
 		//send back
-		send_inner_proto(penv , ptarget , INNER_PROTO_PONG , penv->proc_name , NULL);
+		send_inner_proto(penv , ptarget_from , INNER_PROTO_PONG , penv->proc_name , NULL);
 	break;
 	case INNER_PROTO_PONG:
 		if(!pclient->verify)
@@ -467,6 +482,7 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
 		slog_log(slogd , SL_INFO , "<%s> append recv channel ret:%d result:%d" , __FUNCTION__ , ret , pproto_rsp->result);
 		break;
+
 	case INNER_PROTO_VERIFY_REQ:
 		slog_log(slogd , SL_INFO , "<%s> recv verfiy key:%s from  %d<%s:%d>" , __FUNCTION__ , preq->data.verify_key , pclient->fd ,
 				pclient->client_ip , pclient->client_port);
@@ -481,6 +497,86 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 		else
 			slog_log(slogd , SL_ERR , "<%s> verify failed! " , __FUNCTION__);
 	break;
+
+	case INNER_PROTO_CONN_TRAFFIC_REQ:
+		if(!pclient->verify)
+					break;
+		//from
+		ptarget_from = proc_id2_target(penv->ptarget_info , pclient->proc_id);	//get target
+		if(!ptarget_from || ptarget_from->connected!=TARGET_CONN_DONE)
+		{
+			slog_log(slogd , SL_ERR , "<%s> Connection from GET-TRAFFIC:%d may not ready!" , __FUNCTION__ , pclient->proc_id);
+			break;
+		}
+
+		//arg 后缀匹配
+		strncpy(arg , preq->arg , sizeof(arg));
+		if(strcmp(arg , "*") == 0)
+			select_all = 1;
+		else
+		{
+			ptmp = strchr(arg , '*');
+			if(ptmp)
+				ptmp[0] = 0;
+		}
+
+		//select
+		memset(&traffic_list , 0 , sizeof(traffic_list));
+		strncpy(traffic_list.owner , penv->proc_name , sizeof(traffic_list.owner));
+		ptarget = penv->ptarget_info->head.next;
+		while(ptarget)
+		{
+			//match
+			if(select_all || strncmp(arg , ptarget->target_name , strlen(arg))==0)
+			{
+				found = 1;
+				strncpy(traffic_list.names[traffic_list.count] , ptarget->target_name , PROC_ENTRY_NAME_LEN);
+				memcpy(&traffic_list.lists[traffic_list.count] , &ptarget->traffic , sizeof(conn_traffic_t));
+				traffic_list.count++;
+
+				//rotate
+				if(traffic_list.count >= MAX_CONN_TRAFFIC_PER_PKG)
+				{
+					ret = send_inner_proto(penv , ptarget_from , INNER_PROTO_CONN_TRAFFIC_RSP , preq->arg , (char *)&traffic_list);
+					if(ret < 0)
+						slog_log(slogd , SL_ERR , "<%s> send Refreshing INNER_PROTO_CONN_TRAFFIC_RSP from %d failed!" , __FUNCTION__ , pclient->proc_id);
+					//refresh
+					traffic_list.count = 0;
+					strncpy(traffic_list.owner , penv->proc_name , sizeof(traffic_list.owner));
+				}
+			}
+
+			ptarget = ptarget->next;
+		}
+		//final pkg
+		if(found==0 || traffic_list.count>0)
+		{
+			ret = send_inner_proto(penv , ptarget_from , INNER_PROTO_CONN_TRAFFIC_RSP , preq->arg , (char *)&traffic_list);
+			if(ret < 0)
+				slog_log(slogd , SL_ERR , "<%s> send Final INNER_PROTO_CONN_TRAFFIC_RSP from %d failed!" , __FUNCTION__ , pclient->proc_id);
+		}
+	break;
+
+	case INNER_PROTO_CONN_TRAFFIC_RSP:
+		if(!pclient->verify)
+			break;
+		slog_log(slogd  , SL_DEBUG , "<%s> rsp from %d. arg is:%s count:%d" , __FUNCTION__ , pclient->proc_id , preq->arg , preq->data.traffic_list.count);
+		if(penv->proc_id > MANAGER_PROC_ID_MAX)	//非manager不向上层传递
+			break;
+
+		if(penv->phub->attached < 2)	//uuper closed
+			break;
+
+		pproto_rsp->type = CMD_PROTO_T_TRAFFIC;
+		pproto_rsp->result = 0;
+		snprintf(pproto_rsp->arg , sizeof(pproto_rsp->arg) , "%s %s" , preq->data.traffic_list.owner , preq->arg);
+		memcpy(&pproto_rsp->traffic_list , &preq->data.traffic_list , sizeof(traffic_list));
+			//send to manager
+		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
+		slog_log(slogd , SL_INFO , "<%s> append recv channel ret:%d result:%d" , __FUNCTION__ , ret , pproto_rsp->result);
+
+	break;
+
 	default:
 		slog_log(slogd , SL_ERR , "<%s> illegal proto:%d" , __FUNCTION__ , preq->type);
 	break;
@@ -776,6 +872,9 @@ int print_manage_item_list(int starts , manage_item_t *item_list , int count , F
 {
 	int i = 0;
 	manage_item_t *pitem = NULL;
+	half_bridge_info_t *pinfo = NULL;
+    char buff[128] = {0};
+    char buff2[128] = {0};
 
 	if(!item_list || count<=0 || !fp)
 		return -1;
@@ -790,9 +889,9 @@ int print_manage_item_list(int starts , manage_item_t *item_list , int count , F
 		fprintf(fp , "%-20s %s:%d\n" , "<PROC>" , pitem->proc.name , pitem->proc.proc_id);
 		fprintf(fp , "%-20s %s:%d\n" , "<ADDR>" , pitem->proc.ip_addr , pitem->proc.port);
 		fprintf(fp , "%-20s %s\n" , "<MY-CONNECT>" , (pitem->my_conn_stat==TARGET_CONN_NONE||pitem->my_conn_stat==TARGET_CONN_PROC)?
-							"connecting":"connected");
+							"[connecting]":"connected");
 
-			//run stat
+			//basic run stat
 		fprintf(fp, "<RUN>\n");
 		if(pitem->run_stat.power.start_time > 0)
 			fprintf(fp , "*started:%s\n" , format_time_stamp(pitem->run_stat.power.start_time));
@@ -801,14 +900,14 @@ int print_manage_item_list(int starts , manage_item_t *item_list , int count , F
 		if(pitem->run_stat.reload_info.reload_time > 0)
 		{
 			fprintf(fp , "*reload config file:%s result:%s\n" , format_time_stamp(pitem->run_stat.reload_info.reload_time) ,
-					pitem->run_stat.reload_info.result==0?"success":"failed");
+					pitem->run_stat.reload_info.result==0?"success":"[failed]");
 		}
 		if(pitem->run_stat.upper_stat.check_time > 0)
 		{
 			if(pitem->run_stat.upper_stat.running == MANAGE_UPPER_LOSE)
 				fprintf(fp , "*ERROR:upper process may not run:%s\n" , format_time_stamp(pitem->run_stat.upper_stat.check_time));
 			else
-				fprintf(fp , "%s:%s\n" , pitem->run_stat.upper_stat.running==MANAGE_UPPER_RUNNING?"*upper running":"*upper unknown" ,
+				fprintf(fp , "%s:%s\n" , pitem->run_stat.upper_stat.running==MANAGE_UPPER_RUNNING?"*upper running":"*[upper unknown]" ,
 						format_time_stamp(pitem->run_stat.upper_stat.check_time));
 		}
 			//net stat
@@ -822,6 +921,39 @@ int print_manage_item_list(int starts , manage_item_t *item_list , int count , F
 		else if(pitem->conn_stat.stat == REMOTE_CONNECT_ALL)
 		{
 			fprintf(fp , "*connect all:%s\n" , format_time_stamp(pitem->conn_stat.ts));
+		}
+
+			//bridge stat
+		fprintf(fp, "<BRIDGE>\n");
+		if(pitem->run_stat.bridge_stat.check_time > 0)
+		{
+			fprintf(fp , "*updated on:%s\n" , format_time_stamp(pitem->run_stat.bridge_stat.check_time));
+			fprintf(fp , "%6s %-10s %-10s %-10s %-10s %-10s %-10s %-10s %-10s %-10s %-20s %-10s %-20s \n\n" , " " , "size" , "head" , "tail" , "opted" , "opting" , "max_size" , "min_size" , "ave_size" ,
+					"dropped" , "latest_drop" , "reseted" ,  "latest_reset");
+
+			pinfo = &pitem->run_stat.bridge_stat.info.send;
+			memset(buff , 0 , sizeof(buff));
+			memset(buff2 , 0 , sizeof(buff2));
+			buff[0] = buff2[0] = '-';
+			if(pinfo->latest_drop > 0)
+				snprintf(buff , sizeof(buff) , "%s" , format_time_stamp(pinfo->latest_drop));
+			if(pinfo->latest_reset > 0)
+				snprintf(buff2 , sizeof(buff2) , "%s" , format_time_stamp(pinfo->latest_reset));
+			fprintf(fp , "%6s %-10d %-10d %-10d %-10u %-10d %-10d %-10d %-10d %-10u %-20s %-10u %-20s\n" , ">>SEND" , pinfo->total_size , pinfo->head , pinfo->tail ,
+					pinfo->handled , pinfo->handing , pinfo->min_pkg_size , pinfo->max_pkg_size , pinfo->ave_pkg_size , pinfo->dropped , buff ,
+					pinfo->reset_connect , buff2);
+
+			pinfo = &pitem->run_stat.bridge_stat.info.recv;
+			memset(buff , 0 , sizeof(buff));
+			memset(buff2 , 0 , sizeof(buff2));
+			buff[0] = buff2[0] = '-';
+			if(pinfo->latest_drop > 0)
+				snprintf(buff , sizeof(buff) , "%s" , format_time_stamp(pinfo->latest_drop));
+			if(pinfo->latest_reset > 0)
+				snprintf(buff2 , sizeof(buff2) , "%s" , format_time_stamp(pinfo->latest_reset));
+			fprintf(fp , "%6s %-10d %-10d %-10d %-10u %-10d %-10d %-10d %-10d %-10u %-20s %-10u %-20s\n" , ">>RECV" , pinfo->total_size , pinfo->head , pinfo->tail ,
+					pinfo->handled , pinfo->handing , pinfo->min_pkg_size , pinfo->max_pkg_size , pinfo->ave_pkg_size , pinfo->dropped , buff ,
+					pinfo->reset_connect , buff2);
 		}
 	}
 	return 0;
@@ -987,6 +1119,9 @@ static int send_msg_event(carrier_env_t *penv , int type , void *arg1 , void *ar
 	case MSG_EVENT_T_CONNECTING:
 		memcpy(&pevent->data.one_proc , (proc_entry_t *)arg1 , sizeof(proc_entry_t));
 	break;
+	case MSG_EVENT_T_REPORT_STATISTICS:
+		memcpy(&pevent->data.stat , (msg_event_stat_t *)arg1 , sizeof(msg_event_stat_t));
+	break;
 	default:
 	break;
 	}
@@ -1081,7 +1216,7 @@ static int send_msg_error(carrier_env_t *penv , int type , void *arg1 , void *ar
 		ppkg->pack_head.recver_id = manager_list[i]->proc_id;
 		ret = inner_send_pkg(manager_list[i] , ppkg , sizeof(pack_buff) , slogd);
 
-		slog_log(slogd , SL_DEBUG , "<%s> to manager:%d type:%d ret:%d" , __FUNCTION__ , manager_list[i]->proc_id , type , ret);
+		slog_log(slogd , SL_VERBOSE , "<%s> to manager:%d type:%d ret:%d" , __FUNCTION__ , manager_list[i]->proc_id , type , ret);
 	}
 
 	return 0;
@@ -1265,6 +1400,11 @@ static int handle_msg_event(manager_info_t *pmanage , int from , carrier_msg_t *
 
 		pitem->run_stat.upper_stat.running = MANAGE_UPPER_RUNNING;
 		pitem->run_stat.upper_stat.check_time = pmsg->ts;
+	break;
+	case MSG_EVENT_T_REPORT_STATISTICS:
+		slog_log(msg_log , SL_DEBUG , EVENT_PRINT_PREFFIX" proc %d report statistics!" , from);
+		pitem->run_stat.bridge_stat.check_time = pmsg->ts;
+		memcpy(&pitem->run_stat.bridge_stat.info , &pevent->data.stat.bridge_info , sizeof(bridge_info_t));
 	break;
 	default:
 		slog_log(slogd , SL_ERR , EVENT_PRINT_PREFFIX" proc %d send an unknown event:%d"  , __FUNCTION__ , from , pevent->type);
@@ -1580,6 +1720,9 @@ _final_send:
 
 static int do_manage_cmd_proto(carrier_env_t *penv , manager_cmd_req_t *preq)
 {
+	char arg[MANAGER_CMD_ARG_LEN] = {0};
+	char *p = NULL;
+
 	char bridge_pack_buff[GET_PACK_LEN(sizeof(manager_cmd_rsp_t))] = {0};
 	bridge_package_t *pbridge_pkg;
 	manager_cmd_rsp_t *prsp;
@@ -1654,6 +1797,56 @@ static int do_manage_cmd_proto(carrier_env_t *penv , manager_cmd_req_t *preq)
 		if(ret != 0)
 		{
 			slog_log(slogd , SL_ERR , "<%s> Send Inner Proto to %s Failed!" , __FUNCTION__ , psub_req->arg);
+			send_back = 1;
+			break;
+		}
+		send_inner_proto(penv , ptarget , INNER_PROTO_CONN_TRAFFIC_REQ , "*" , NULL);
+		break;
+	case CMD_PROTO_T_TRAFFIC:
+		//check arg
+		strncpy(arg , psub_req->arg , sizeof(arg));
+		p = strchr(arg , ' ');
+		if(!p)
+		{
+			send_back = 1;
+			slog_log(slogd , SL_ERR , "<%s> parse traffic failed! can not get src" , __FUNCTION__);
+			break;
+		}
+		p[0] = 0;
+		p++;
+		if(strlen(arg)<=0 || strlen(p)<=0)
+		{
+			send_back = 1;
+			slog_log(slogd , SL_ERR , "<%s> parse traffic failed! can not get src or dst! arg:%s" , __FUNCTION__ , psub_req->arg);
+			break;
+		}
+		//get target
+		for(i=0; i<pmanager->item_count; i++)
+		{
+			pitem = &pmanager->item_list[i];
+			if(strncmp(pitem->proc.name , arg , sizeof(PROC_ENTRY_NAME_LEN)) == 0)
+				break;
+		}
+		if(i >= pmanager->item_count) //not found
+		{
+			slog_log(slogd , SL_ERR , "<%s> TRAFFIC %s Item not found!" , __FUNCTION__ , arg);
+			send_back = 1;
+			break;
+		}
+
+		ptarget = proc_id2_target(penv->ptarget_info , pitem->proc.proc_id);
+		if(!ptarget)
+		{
+			slog_log(slogd , SL_ERR , "<%s> TRAFFIC %s Target not found!" , __FUNCTION__ , arg);
+			send_back = 1;
+			break;
+		}
+
+		//match send to server
+		ret = send_inner_proto(penv , ptarget , INNER_PROTO_CONN_TRAFFIC_REQ , p , NULL);
+		if(ret != 0)
+		{
+			slog_log(slogd , SL_ERR , "<%s> Send Inner Proto to %s Failed!" , __FUNCTION__ , arg);
 			send_back = 1;
 			break;
 		}

@@ -27,6 +27,7 @@ extern int errno;
 #define CMD_STR_SYS_ERR "PROB-SYS"
 #define CMD_STR_ANY_ERR "PROB-ANY"
 #define CMD_STR_PING "PING"
+#define CMD_STR_TRAFFIC "TRAFFIC"
 
 /************END**************/
 
@@ -60,7 +61,7 @@ static int parent_process(pid_t pid);
 static int parent_parse_cmd(char *cmd);
 static int child_process();
 static int child_parse_cmd(manager_pipe_pkg_t *ppkg);
-static int strip_exra_space(char *str);
+static int strip_extra_space(char *str);
 static int print_rsp_stat(manager_cmd_rsp_t *prsp);
 static int print_rsp_err(manager_cmd_rsp_t *prsp);
 static int print_rsp_proto(manager_cmd_rsp_t *prsp);
@@ -186,6 +187,7 @@ static int show_cmd()
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] show probable connection problems  of <proc_name>[*]\n" , CMD_STR_CONN_ERR);
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] show probable sys problems  of <proc_name>[*]\n" , CMD_STR_SYS_ERR);
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] show all probable problems of net or sys of <proc_name>[*]\n" , CMD_STR_ANY_ERR);
+	fprintf(penv->fp_out , "【%s】 <src_proc_name> <dst_proc_name>[*] show bridge traffic from src to dst* \n" , CMD_STR_TRAFFIC);
 	fprintf(penv->fp_out , "【%s】 exit manager tool\n" , CMD_STR_EXIT);
 	fprintf(penv->fp_out , "+--------------------------+\n");
 	return 0;
@@ -290,7 +292,7 @@ static int parent_parse_cmd(char *str_cmd)
 		//PING
 		if(strcmp(ppkg->cmd , CMD_STR_PING) == 0)
 		{
-			strip_exra_space(ppkg->arg);
+			strip_extra_space(ppkg->arg);
 			if(strchr(ppkg->arg , ' '))
 			{
 				fprintf(penv->fp_out , "Error:cmd 【%s】 only accept one arg!\n" , ppkg->cmd);
@@ -306,11 +308,32 @@ static int parent_parse_cmd(char *str_cmd)
 			break;
 		}
 
+		//TRAFFIC
+		if(strcmp(ppkg->cmd , CMD_STR_TRAFFIC) == 0)
+		{
+			strip_extra_space(ppkg->arg);
+			p = strchr(ppkg->arg , ' ');
+			if(!p)
+			{
+				fprintf(penv->fp_out , "Error:cmd 【%s】 needs two args!\n" , ppkg->cmd);
+				return -1;
+			}
+			p++;
+			p = strchr(p , ' ');
+			if(p)
+			{
+				fprintf(penv->fp_out , "Error:cmd 【%s】 only needs two args!\n" , ppkg->cmd);
+				return -1;
+			}
+
+			break;
+		}
+
 		//STAT,SHOW-ERR
 		if(strcmp(ppkg->cmd , CMD_STR_STAT) == 0 || strcmp(ppkg->cmd , CMD_STR_ANY_ERR)==0 ||
 			strcmp(ppkg->cmd , CMD_STR_CONN_ERR)==0 || strcmp(ppkg->cmd , CMD_STR_SYS_ERR)==0)
 		{
-			strip_exra_space(ppkg->arg);
+			strip_extra_space(ppkg->arg);
 			//printf("cmd:%s arg:%s\n" , ppkg->cmd  , ppkg->arg);
 				//check multi arg
 			if(strchr(ppkg->arg , ' '))
@@ -469,6 +492,16 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 			break;
 		}
 
+		//TRAFFIC
+		if(strcmp(ppkg->cmd , CMD_STR_TRAFFIC) == 0)
+		{
+			memset(&cmd_req , 0 , sizeof(cmd_req));
+			cmd_req.type = MANAGER_CMD_PROTO;
+			cmd_req.data.stat.type = CMD_PROTO_T_TRAFFIC;
+			strncpy(cmd_req.data.proto.arg , ppkg->arg , MANAGER_CMD_ARG_LEN);
+			break;
+		}
+
 		//STAT
 		if(strcmp(ppkg->cmd , CMD_STR_STAT) == 0)
 		{
@@ -479,6 +512,7 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 			strncpy(cmd_req.data.stat.arg , ppkg->arg , MANAGER_CMD_ARG_LEN);
 			break;
 		}
+
 
 		//STAT-ALL
 		if(strcmp(ppkg->cmd , "STAT-ALL") == 0)
@@ -545,7 +579,7 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 }
 
 //去除str首尾空格，并将其余位置空格压缩
-static int strip_exra_space(char *str)
+static int strip_extra_space(char *str)
 {
 	char tmp_buff[MANAGER_CMD_BUFF_LEN] = {0};
 	char prev = ' ';
@@ -652,8 +686,13 @@ static int print_rsp_err(manager_cmd_rsp_t *prsp)
 
 static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 {
+	char buff[128] = {0};
+	char buff2[128] = {0};
 	cmd_proto_rsp_t *psub = NULL;
 	char cmd[MANAGER_CMD_NAME_LEN] = {0};
+	int i = 0;
+	conn_traffic_t *ptraffic = NULL;
+
 	/***Arg Check*/
 	if(!prsp)
 		return -1;
@@ -665,7 +704,10 @@ static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 	switch(psub->type)
 	{
 	case CMD_PROTO_T_PING:
-		strncpy(cmd , "PING" , sizeof(cmd));
+		strncpy(cmd , CMD_STR_PING , sizeof(cmd));
+		break;
+	case CMD_PROTO_T_TRAFFIC:
+		strncpy(cmd , CMD_STR_TRAFFIC , sizeof(cmd));
 		break;
 	default:
 		strncpy(cmd , "???" , sizeof(cmd));
@@ -696,6 +738,22 @@ static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 	{
 	case CMD_PROTO_T_PING:
 		fprintf(penv->fp_out , "PONG\n");
+		break;
+	case CMD_PROTO_T_TRAFFIC:
+		fprintf(penv->fp_out , "%-32s %-10s %-10s %-10s %-10s %-10s %-10s %-20s %-10s %-20s \n\n" , " " , "opted" , "opting" , "max_size" , "min_size" , "ave_size" ,
+							"dropped" , "latest_drop" , "reseted" ,  "latest_reset");
+		for(i=0; i<psub->traffic_list.count ; i++)
+		{
+			ptraffic = &psub->traffic_list.lists[i];
+
+			buff[0] = buff2[0] = '-';
+			if(ptraffic->latest_drop > 0)
+				snprintf(buff , sizeof(buff) , "%s" , format_time_stamp(ptraffic->latest_drop));
+			if(ptraffic->latest_reset > 0)
+				snprintf(buff2 , sizeof(buff2) , "%s" , format_time_stamp(ptraffic->latest_reset));
+			fprintf(penv->fp_out , ">>%-32s %-10u %-10u %-10u %-10u %-10u %-10u %-20s %-10u %-20s \n\n" , psub->traffic_list.names[i] ,
+					ptraffic->handled , ptraffic->handing , ptraffic->max_size , ptraffic->min_size , ptraffic->ave_size ,ptraffic->dropped ,buff , ptraffic->reset ,  buff2);
+		}
 		break;
 	default:
 		break;

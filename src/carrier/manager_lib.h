@@ -11,8 +11,6 @@
 #include "proc_bridge_base.h"
 #include "carrier_lib.h"
 
-#define MANAGER_CMD_NAME_LEN (32)
-#define MANAGER_CMD_ARG_LEN (128)
 #define MANAGER_STAT_MAX_ITEM 10
 
 /*
@@ -42,6 +40,7 @@ typedef struct _manager_pipe_pkg_t
 #define CMD_ERR_T_ALL 3	//检索所有错误
 
 #define CMD_PROTO_T_PING 1 //ping
+#define CMD_PROTO_T_TRAFFIC 2 //conn-traffic
 
 	//STAT
 typedef struct _cmd_stat_req_t
@@ -90,6 +89,7 @@ typedef struct _cmd_proto_rsp_t
 	short type;
 	char result;
 	char arg[MANAGER_CMD_ARG_LEN];
+	traffic_list_t traffic_list;
 }cmd_proto_rsp_t;
 
 	//MANAGER_CMD

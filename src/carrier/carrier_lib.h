@@ -38,7 +38,7 @@ typedef struct _half_bridge_info_t
 
 	int	min_pkg_size;	//最小包长
 	int 	max_pkg_size;	//最大包长
-	int aver_pkg_size;	//平均包长
+	int ave_pkg_size;	//平均包长
 
 	unsigned int dropped;	//丢弃包数目
 	long latest_drop;	//最近一次丢包时间
@@ -53,6 +53,30 @@ typedef struct _bridge_info_t
 	half_bridge_info_t recv;
 }bridge_info_t;
 
+/*
+ * 每链接的信息
+ */
+typedef struct _conn_traffic_t
+{
+	unsigned int handled;	//处理过的包
+	unsigned int handing; //正在处理的包
+	int min_size;
+	int max_size;
+	int ave_size;	//平均包长
+	unsigned int dropped; 	//丢包数
+	long latest_drop;	//最近一次丢包
+	unsigned int reset; //链接重置数
+	long latest_reset;	//最近一次重置
+}conn_traffic_t;
+#define MAX_CONN_TRAFFIC_PER_PKG 50
+
+typedef struct _traffic_list_t
+{
+	int count;
+	char owner[PROC_ENTRY_NAME_LEN];
+	char names[MAX_CONN_TRAFFIC_PER_PKG][PROC_ENTRY_NAME_LEN];
+	conn_traffic_t lists[MAX_CONN_TRAFFIC_PER_PKG];
+}traffic_list_t;
 
 /*
  * target info
@@ -76,6 +100,7 @@ typedef struct _target_detail
 	char *buff;
 	char main_buff[BRIDGE_PACK_LEN * 5];
 	char back_buff[BRIDGE_PACK_LEN * 5];
+	conn_traffic_t traffic;
 }target_detail_t;
 
 typedef struct _target_
@@ -166,6 +191,11 @@ typedef struct _manage_item_t
 			long check_time;
 			char running;	//0:no 1:running
 		}upper_stat;
+		struct
+		{
+			long check_time;
+			bridge_info_t info;	//bridge_info
+		}bridge_stat;
 	}run_stat;
 }manage_item_t;
 
@@ -218,7 +248,8 @@ typedef struct _carrier_env_t
 #define MSG_EVENT_T_SHUTDOWN 5	//进程关闭
 #define MSG_EVENT_T_CONNECTING 6	//连接中
 #define MSG_EVENT_T_UPPER_RUNNING 7 //上层业务进程正常运行
-#define MSG_EVENT_T_MAX		7
+#define MSG_EVENT_T_REPORT_STATISTICS 8	//报告数据
+#define MSG_EVENT_T_MAX		8
 
 #define MSG_ERR_T_MIN			1
 #define MSG_ERR_T_START 		1	//进程拉起失败
@@ -229,6 +260,10 @@ typedef struct _carrier_env_t
 #define MSG_ERR_T_MAX				5
 
 //msg-event
+typedef struct _msg_event_stat_t
+{
+	bridge_info_t bridge_info;	//bridge statistics
+}msg_event_stat_t;
 typedef struct _msg_event_t
 {
 	int type;	//refer MSG_EVENT_T_xx
@@ -237,6 +272,7 @@ typedef struct _msg_event_t
 		int value;
 		long lvalue;
 		proc_entry_t one_proc;
+		msg_event_stat_t stat;
 	}data;
 }msg_event_t;
 
@@ -267,16 +303,20 @@ typedef struct _carrier_msg_t
 #define INNER_PROTO_PONG 2 //pong
 #define INNER_PROTO_VERIFY_REQ 3 //链接验证
 #define INNER_PROTO_VERIFY_RSP  4
-#define INNER_PROTO_MAX 4
+#define INNER_PROTO_CONN_TRAFFIC_REQ 5
+#define INNER_PROTO_CONN_TRAFFIC_RSP 6
+#define INNER_PROTO_MAX 6
 
 typedef struct _inner_proto_t
 {
 	int type;	//refer INNER_PROTO_**
+	char arg[MANAGER_CMD_ARG_LEN];
 	union
 	{
 		char result;
 		char proc_name[PROC_ENTRY_NAME_LEN];
 		char verify_key[BRIDGE_PROC_CONN_VERIFY_KEY_LEN];
+		traffic_list_t traffic_list;
 	}data;
 }inner_proto_t;
 

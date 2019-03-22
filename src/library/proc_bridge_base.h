@@ -26,6 +26,9 @@
 #define CARRIER_PORT_ADD	 0 //10086	/*基于proc端口的增量*/
 #define CARRIER_REAL_PORT(n) (n+CARRIER_PORT_ADD)	//carrier进程监听的实际端口(加上了偏移)
 
+#define MANAGER_CMD_NAME_LEN (32)
+#define MANAGER_CMD_ARG_LEN (128)
+
 /*##########DATA STRUCT##########*/
 /******Bridge Package*/
 #define BRIDGE_PACKAGE_DATA_LEN	(1024*100) //100k
