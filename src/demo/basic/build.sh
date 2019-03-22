@@ -37,6 +37,7 @@ function install()
    fi
   done
 
+  chmod a+x deploy_proc.sh
   #create cfg
   python ./bridge_build.py -c
   sleep 1
