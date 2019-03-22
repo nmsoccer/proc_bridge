@@ -1800,7 +1800,6 @@ static int do_manage_cmd_proto(carrier_env_t *penv , manager_cmd_req_t *preq)
 			send_back = 1;
 			break;
 		}
-		send_inner_proto(penv , ptarget , INNER_PROTO_CONN_TRAFFIC_REQ , "*" , NULL);
 		break;
 	case CMD_PROTO_T_TRAFFIC:
 		//check arg
