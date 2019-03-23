@@ -85,6 +85,7 @@ static int print_bridge_info(bridge_hub_t *phub);
 static int set_sock_option(int sock_fd , int send_size , int recv_size , int no_delay);
 static int check_client_info(carrier_env_t *penv);
 static int check_run_statistics(carrier_env_t *penv);
+static int check_signal_stat(carrier_env_t *penv);
 
 //static bridge_hub_t *phub = NULL;
 static int epoll_fd;
@@ -516,8 +517,6 @@ int main(int argc , char **argv)
 
 static void handle_signal(int sig)
 {
-	int ret = -1;
-
 	switch(sig)
 	{
 	case SIGTERM:
@@ -529,29 +528,29 @@ static void handle_signal(int sig)
 		//slog_close(slogd);
 		//break;
 	case SIGKILL:
-		slog_log(slogd , SL_INFO , "Main:Recv KILL SIGNAL, exit...");
+		slog_log(slogd , SL_INFO , "Main:Recv EXIT SIGNAL, exit...");
 		send_carrier_msg(&carrier_env , CR_MSG_EVENT , MSG_EVENT_T_SHUTDOWN , NULL , NULL);
-		if(penv->proc_id<=MANAGER_PROC_ID_MAX && penv->pmanager)
-			penv->pmanager->stat = MANAGE_STAT_BAD;
-		print_manage_info(penv);
-		slog_close(slogd);
-		sleep(2);
+		//sleep(2);
+		penv->sig_map.sig_exit = 1;
 		break;
 	case SIGUSR2:
 		slog_log(slogd , SL_INFO , "Main:Recv USR2 SIGNAL, please check channel.info!");
 		print_bridge_info(penv->phub);
-		return;
+		break;
 	case SIGUSR1:
-		slog_log(slogd , SL_INFO , "-----------------------Begin to Reload Cfg-------------------");
+		slog_log(slogd , SL_INFO , "Recv USR1 SIGNAL, try to reload cfg later...");
+		penv->sig_map.sig_reload = 1;
+		/*
 		ret = read_carrier_cfg(&carrier_env , 1);
 		slog_log(slogd , SL_INFO , "-----------------------Rload Cfg Finished-------------------");
-		send_carrier_msg(&carrier_env , CR_MSG_EVENT , MSG_EVENT_T_RELOAD , &ret , NULL);
-		return;
+		send_carrier_msg(&carrier_env , CR_MSG_EVENT , MSG_EVENT_T_RELOAD , &ret , NULL);*/
+		break;
 	default:
 		return;
 	}
 
-	exit(0);
+	//exit(0);
+	return;
 }
 
 static int show_help(void)
@@ -1520,6 +1519,7 @@ static int world_tick()
 	check_bridge(penv->phub);
 	check_client_info(penv);
 	check_run_statistics(penv);
+	check_signal_stat(penv);
 	return 0;
 }
 
@@ -1708,10 +1708,11 @@ static int close_target_fd(target_detail_t *ptarget , const char *reason , char 
 {
 	int ret = -1;
 	int handle_fd = -1;
+	long curr_ts = 0;
 	if(!ptarget || !reason)
 		return -1;
 
-
+	curr_ts = time(NULL);
 	handle_fd = ptarget->fd;
 	//del from epoll
 	if(handle_fd>=0 && del_from_epoll)
@@ -1727,6 +1728,12 @@ static int close_target_fd(target_detail_t *ptarget , const char *reason , char 
 	memset(ptarget->main_buff , 0 , sizeof(ptarget->main_buff));
 	memset(ptarget->back_buff , 0 , sizeof(ptarget->back_buff));
 	ptarget->tail = 0;
+
+	penv->bridge_info.send.reset_connect++;
+	penv->bridge_info.send.latest_reset = curr_ts;
+	ptarget->traffic.reset++;
+	ptarget->traffic.latest_reset = curr_ts;
+
 	slog_log(slogd , SL_INFO , "<%s> close target success! fd:%d proc_id:%d addr:<%s:%d>" , __FUNCTION__ , handle_fd , ptarget->proc_id ,
 			ptarget->ip_addr , ptarget->port);
 	return 0;
@@ -2389,6 +2396,40 @@ static int check_run_statistics(carrier_env_t *penv)
 	{
 		slog_log(penv->slogd , SL_ERR , "<%s> send msg failed!" , __FUNCTION__);
 		return -1;
+	}
+	return 0;
+}
+
+static int check_signal_stat(carrier_env_t *penv)
+{
+	static long last_check = 0;
+	long curr_ts = time(NULL);
+	if((curr_ts - last_check) < 5)
+		return 0;
+
+	last_check = curr_ts;
+	int ret = -1;
+	//check exit
+	if(penv->sig_map.sig_exit)
+	{
+		slog_log(penv->slogd , SL_INFO , "<%s> dectect sig-exit. shutting down..." , __FUNCTION__);
+		if(penv->proc_id<=MANAGER_PROC_ID_MAX && penv->pmanager)
+			penv->pmanager->stat = MANAGE_STAT_BAD;
+		print_manage_info(penv);
+		slog_close(penv->slogd);
+		exit(0);
+		return 0;
+	}
+	//check reload
+	if(penv->sig_map.sig_reload)
+	{
+		slog_log(slogd , SL_INFO , "-----------------------Begin to Reload Cfg-------------------");
+		ret = read_carrier_cfg(&carrier_env , 1);
+		slog_log(slogd , SL_INFO , "-----------------------Rload Cfg Finished-------------------");
+		send_carrier_msg(&carrier_env , CR_MSG_EVENT , MSG_EVENT_T_RELOAD , &ret , NULL);
+
+		if(ret == 0)
+			penv->sig_map.sig_reload = 0;
 	}
 	return 0;
 }

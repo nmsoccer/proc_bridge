@@ -1,7 +1,6 @@
 #!/bin/python
 import os
 import sys,getopt
-#import commands
 import time
 
 #BRIDGE_USER="nmsoccer"
@@ -41,6 +40,7 @@ if PY_VERSION == 3:
 		else:
 			return 1;
 else:
+	import commands;
 	pass;
 
 

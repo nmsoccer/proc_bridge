@@ -227,6 +227,11 @@ typedef struct _carrier_env_t
 	client_list_t *pclient_list;
 	bridge_hub_t *phub;
 	bridge_info_t bridge_info;
+	struct
+	{
+		char sig_exit;	//信号退出
+		char sig_reload;	//信号重载
+	}sig_map;
 }carrier_env_t;
 
 
