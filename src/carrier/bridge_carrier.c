@@ -1,4 +1,4 @@
-/*
+﻿/*
  * bridge_carrier.c
  *
  * 每一个proc对应的守护进程
@@ -62,7 +62,7 @@ static void handle_signal(int sig);
 static int connect_to_remote(void);
 static void handle_connecting_fd(target_detail_t *ptarget , struct epoll_event *pevent);
 static int handle_target_fd(target_detail_t *ptarget , struct epoll_event *pevent);
-static int close_target_fd(target_detail_t *ptarget , const char *reason , char del_from_epoll);
+//static int close_target_fd(target_detail_t *ptarget , const char *reason , int epoll_fd , char del_from_epoll);
 static int parse_target_list(char *target_list , target_detail_t *ptarget);
 static int dispatch_bridge(void);
 static int show_help(void);
@@ -88,7 +88,7 @@ static int check_run_statistics(carrier_env_t *penv);
 static int check_signal_stat(carrier_env_t *penv);
 
 //static bridge_hub_t *phub = NULL;
-static int epoll_fd;
+//static int epoll_fd;
 
 int main(int argc , char **argv)
 {
@@ -314,8 +314,8 @@ int main(int argc , char **argv)
 	}
 
 	/*set epoll*/
-	epoll_fd = epoll_create(MAX_EPOLL_QUEUE);
-	if(epoll_fd < 0)
+	penv->epoll_fd = epoll_create(MAX_EPOLL_QUEUE);
+	if(penv->epoll_fd < 0)
 	{
 		slog_log(slogd , SL_ERR , "Error:bridge carrier:create epoll failed!");
 		close(listen_socket);
@@ -325,7 +325,7 @@ int main(int argc , char **argv)
 	//put listen_socket into epoll
 	ep_event.events = EPOLLIN;
 	ep_event.data.fd = listen_socket;
-	ret = epoll_ctl(epoll_fd , EPOLL_CTL_ADD , listen_socket , &ep_event);
+	ret = epoll_ctl(penv->epoll_fd , EPOLL_CTL_ADD , listen_socket , &ep_event);
 	if(ret < 0)
 	{
 		slog_log(slogd , SL_ERR , "Error:bridge carrier:add listen socket into epoll list failed!");
@@ -394,7 +394,7 @@ int main(int argc , char **argv)
 		world_tick();
 
 		/*epoll wait*/
-		active_fds = epoll_wait(epoll_fd , ep_event_list , MAX_EPOLL_QUEUE , 200);
+		active_fds = epoll_wait(penv->epoll_fd , ep_event_list , MAX_EPOLL_QUEUE , 200);
 		if(active_fds < 0)
 		{
 			slog_log(slogd , SL_DEBUG , "epoll_wait err:%s" , strerror(errno));
@@ -430,7 +430,7 @@ int main(int argc , char **argv)
 				set_sock_option(acc_socket , 2048 , BRIDGE_PACK_LEN , 0);
 				ep_event.events = EPOLLIN | EPOLLET;
 				ep_event.data.fd = acc_socket;
-				ret = epoll_ctl(epoll_fd , EPOLL_CTL_ADD , acc_socket , &ep_event);
+				ret = epoll_ctl(penv->epoll_fd , EPOLL_CTL_ADD , acc_socket , &ep_event);
 				if(ret < 0)
 				{
 					slog_log(slogd , SL_ERR , "error:bridge_carrier:add acc socket into epoll list failed!");
@@ -489,7 +489,7 @@ int main(int argc , char **argv)
 				else	//NONE?
 				{
 					slog_log(slogd , SL_FATAL , "target sock %d[%s:%d]in epoll but none status!" , ptarget->fd , ptarget->ip_addr , ptarget->port);
-					close_target_fd(ptarget , "main-epoll" , 1);
+					close_target_fd(penv , ptarget , "main-epoll" , penv->epoll_fd , 1);
 				}
 
 			}while(0);
@@ -814,7 +814,7 @@ static int connect_to_remote(void)
 				memset(&ep_event , 0 , sizeof(ep_event));
 				ep_event.events = EPOLLIN | EPOLLOUT | EPOLLET;	//read-write and edge trigger
 				ep_event.data.fd = remote_socket;
-				ret = epoll_ctl(epoll_fd , EPOLL_CTL_ADD , remote_socket , &ep_event);
+				ret = epoll_ctl(penv->epoll_fd , EPOLL_CTL_ADD , remote_socket , &ep_event);
 				if(ret < 0)
 				{
 					slog_log(slogd , SL_ERR , "%s Error:add remote socket %d[%s:%d] to epoll list failed!" , __FUNCTION__ , remote_socket ,
@@ -841,7 +841,7 @@ static int connect_to_remote(void)
 		memset(&ep_event , 0 , sizeof(ep_event));
 		ep_event.events = EPOLLIN | EPOLLOUT | EPOLLET;	//read-write and edge trigger
 		ep_event.data.fd = remote_socket;
-		ret = epoll_ctl(epoll_fd , EPOLL_CTL_ADD , remote_socket , &ep_event);
+		ret = epoll_ctl(penv->epoll_fd , EPOLL_CTL_ADD , remote_socket , &ep_event);
 		if(ret < 0)
 		{
 			slog_log(slogd , SL_ERR , "%s Error:add remote socket %d[%s:%d] to epoll list failed!" , __FUNCTION__ , remote_socket ,
@@ -855,7 +855,6 @@ static int connect_to_remote(void)
 
 		ptarget->connected = TARGET_CONN_DONE;
 		ptarget->fd = remote_socket;
-		ptarget->buff = ptarget->main_buff;
 		ptarget->tail = 0;
 
 		//mange only
@@ -948,11 +947,8 @@ static int dispatch_bridge(void)
 		if(!ptarget)
 		{
 			slog_log(slogd , SL_ERR , "%s failed! target %d not found!" , __FUNCTION__ , pstpack->pack_head.recver_id);
-			if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
-			{
-				pbridge_info->send.dropped++;
-				pbridge_info->send.latest_drop = curr_ts;
-			}
+			pbridge_info->send.dropped++;
+			pbridge_info->send.latest_drop = curr_ts;
 			continue;
 		}
 
@@ -961,47 +957,57 @@ static int dispatch_bridge(void)
 		if(ptarget->connected != TARGET_CONN_DONE)
 		{
 			slog_log(slogd , SL_ERR , "%s failed! connection is lost. target:%d" , __FUNCTION__ , ptarget->proc_id);
-			if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
-			{
-				pbridge_info->send.dropped++;
-				pbridge_info->send.latest_drop = curr_ts;
-			}
+			pbridge_info->send.dropped++;
+			pbridge_info->send.latest_drop = curr_ts;
 			ptraffic->dropped++;
 			ptraffic->latest_drop = curr_ts;
 			continue;
 		}
 
+		/***Init*/
+		if(!ptarget->buff || ptarget->buff_len==0)
+		{
+			ret = expand_target_buff(ptarget , penv->slogd);
+			if(ret < 0)
+			{
+				slog_log(slogd , SL_ERR , "%s init send_buff to [%s:%d] failed!" , __FUNCTION__ , ptarget->target_name , ptarget->proc_id);
+				pbridge_info->send.dropped++;
+				pbridge_info->send.latest_drop = curr_ts;
+				ptraffic->dropped++;
+				ptraffic->latest_drop = curr_ts;
+				continue;
+			}
+		}
+
 		/***Flush Target*/
 		if(ptarget->tail > 0)
 		{
-			slog_log(slogd , SL_INFO , "%s is sending old package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
-			ret = flush_target(ptarget , slogd);
-			if(ret < 0)	//出现无法恢复错误，则已经重置链接 丢弃当前包
+			slog_log(slogd , SL_DEBUG , "%s is sending old package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
+			ret = flush_target(ptarget , penv->slogd);
+			if(ret < 0)	//出现无法恢复错误，则应重置链接 丢弃当前包
 			{
-				pbridge_info->send.reset_connect++;
-				pbridge_info->send.latest_reset = curr_ts;
+				close_target_fd(penv , ptarget , __FUNCTION__ , penv->epoll_fd , 1);
 				continue;
 			}
-			ptraffic->reset++;
-			ptraffic->latest_reset = curr_ts;
 		}
 
 		/***Send Current Pack*/
 		if(ptarget->tail > 0)	//如果缓冲区未空，则说明当前不能发送，在STLV包之后投入缓冲区
 		{
-			//剩余缓冲区空间不足以放入则丢弃
-			if((sizeof(ptarget->main_buff) - ptarget->tail) < (STLV_PACK_SAFE_LEN(bridge_pack_len)))
+			//剩余缓冲区空间不足则扩充缓冲区
+			if((ptarget->buff_len - ptarget->tail) < (STLV_PACK_SAFE_LEN(bridge_pack_len)))
 			{
-				slog_log(slogd , SL_ERR , "%s drop package. flush buff imcomplete. but target buff left space is too small! left:%d proper:%d" ,
-						__FUNCTION__ , sizeof(ptarget->main_buff) - ptarget->tail , STLV_PACK_SAFE_LEN(bridge_pack_len));
-				if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
+				ret = expand_target_buff(ptarget , penv->slogd);
+				if(ret < 0)
 				{
+					slog_log(slogd , SL_ERR , "%s expand target failed! drop package. flush buff imcomplete. but target buff left space is too small! left:%d proper:%d" ,
+							__FUNCTION__ , ptarget->buff_len - ptarget->tail , STLV_PACK_SAFE_LEN(bridge_pack_len));
 					pbridge_info->send.dropped++;
 					pbridge_info->send.latest_drop = curr_ts;
+					ptraffic->dropped++;
+					ptraffic->latest_drop = curr_ts;
+					continue;
 				}
-				ptraffic->dropped++;
-				ptraffic->latest_drop = curr_ts;
-				continue;
 			}
 
 			//pack
@@ -1009,18 +1015,15 @@ static int dispatch_bridge(void)
 			if(stlv_len == 0)
 			{
 				slog_log(slogd , SL_ERR , "%s flush buff imcomplete and drop package for stlv pack failed!" , __FUNCTION__);
-				if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
-				{
-					pbridge_info->send.dropped++;
-					pbridge_info->send.latest_drop = curr_ts;
-				}
+				pbridge_info->send.dropped++;
+				pbridge_info->send.latest_drop = curr_ts;
 				ptraffic->dropped++;
 				ptraffic->latest_drop = curr_ts;
 				continue;
 			}
 
 			//upate
-			slog_log(slogd , SL_INFO , "%s flush buff imcomplete and saved to buff success!" , __FUNCTION__);
+			slog_log(slogd , SL_DEBUG , "%s flush buff imcomplete and saved to buff success!" , __FUNCTION__);
 
 			//只记录业务包
 			if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
@@ -1052,11 +1055,8 @@ static int dispatch_bridge(void)
 		stlv_len = STLV_PACK_ARRAY(ptarget->buff , pstpack , bridge_pack_len);
 		if(stlv_len == 0)
 		{
-			if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
-			{
-				pbridge_info->send.dropped++;
-				pbridge_info->send.latest_drop = curr_ts;
-			}
+			pbridge_info->send.dropped++;
+			pbridge_info->send.latest_drop = curr_ts;
 			ptraffic->dropped++;
 			ptraffic->latest_drop = curr_ts;
 			slog_log(slogd , SL_ERR , "%s drop package for stlv pack failed!" , __FUNCTION__);
@@ -1088,14 +1088,10 @@ static int dispatch_bridge(void)
 		ptarget->latest_ts = time(NULL);
 		ptarget->ready_count = 1;
 		slog_log(slogd , SL_INFO , "%s is sending curr package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
-		ret = flush_target(ptarget , slogd);
+		ret = flush_target(ptarget , penv->slogd);
 		if(ret < 0)
 		{
-			pbridge_info->send.reset_connect++;
-			pbridge_info->send.latest_reset = curr_ts;
-
-			ptraffic->reset++;
-			ptraffic->latest_reset = curr_ts;
+			close_target_fd(penv , ptarget , __FUNCTION__ , penv->epoll_fd , 1);
 		}
 
 	}
@@ -1155,7 +1151,7 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 			case EAGAIN:
 			//case EWOULDBLOCK:
 				//no more data
-				slog_log(slogd , SL_DEBUG , "%s no more data!" , __FUNCTION__);
+				slog_log(slogd , SL_VERBOSE , "%s no more data!" , __FUNCTION__);
 			break;
 
 			default:
@@ -1547,7 +1543,8 @@ static void handle_connecting_fd(target_detail_t *ptarget , struct epoll_event *
 
 		//update info
 		ptarget->connected = TARGET_CONN_DONE;
-		ptarget->buff = ptarget->main_buff;
+		ptarget->buff = NULL;
+		ptarget->buff_len = 0;
 		ptarget->tail = 0;
 
 		//mange only
@@ -1599,8 +1596,8 @@ static void handle_connecting_fd(target_detail_t *ptarget , struct epoll_event *
 				success = 1;
 				//update info
 				ptarget->connected = TARGET_CONN_DONE;
-				ptarget->buff = ptarget->main_buff;
-				ptarget->tail = 0;
+				ptarget->buff = NULL;
+				ptarget->buff_len = ptarget->tail = 0;
 				set_sock_option(handle_fd , BRIDGE_PACK_LEN , 1024*2 , 1);
 
 				//mange only
@@ -1625,7 +1622,7 @@ static void handle_connecting_fd(target_detail_t *ptarget , struct epoll_event *
 		//del epoll manage
 		if(!success)
 		{
-			close_target_fd(ptarget , "connecting_fd:r&w" , 1);
+			close_target_fd(penv , ptarget , "connecting_fd:r&w" , penv->epoll_fd , 1);
 		}
 		return;
 	}
@@ -1643,7 +1640,7 @@ static void handle_connecting_fd(target_detail_t *ptarget , struct epoll_event *
 		else
 			slog_log(slogd , SL_ERR , "%s err:%s" , __FUNCTION__ , strerror(errno));
 
-		close_target_fd(ptarget , "connecting_fd:r&nw" , 1);
+		close_target_fd(penv , ptarget , "connecting_fd:r&nw" , penv->epoll_fd , 1);
 		return;
 	}
 
@@ -1652,7 +1649,7 @@ static void handle_connecting_fd(target_detail_t *ptarget , struct epoll_event *
 			ptarget->ip_addr);
 
 	//reset
-	close_target_fd(ptarget , "connecting_fd:nr&nw" , 1);
+	close_target_fd(penv , ptarget , "connecting_fd:nr&nw" , penv->epoll_fd , 1);
 	return;
 }
 
@@ -1685,13 +1682,13 @@ static int handle_target_fd(target_detail_t *ptarget , struct epoll_event *peven
 				memset(&pmanage_item->conn_stat , 0 , sizeof(pmanage_item->conn_stat));
 
 			}
-			close_target_fd(ptarget , __FUNCTION__ , 1);
+			close_target_fd(penv , ptarget , __FUNCTION__ , penv->epoll_fd , 1);
 		}
 		else	//would not happend
 		{
 			slog_log(slogd , SL_INFO , "<%s> detect peer %d[%s:%d] err:%s" , __FUNCTION__ , ptarget->fd , ptarget->ip_addr , ptarget->port ,
 					strerror(errno));
-			close_target_fd(ptarget , __FUNCTION__ , 1);
+			close_target_fd(penv , ptarget , __FUNCTION__ , penv->epoll_fd , 1);
 		}
 	}
 	else
@@ -1704,40 +1701,6 @@ static int handle_target_fd(target_detail_t *ptarget , struct epoll_event *peven
 	return 0;
 }
 
-static int close_target_fd(target_detail_t *ptarget , const char *reason , char del_from_epoll)
-{
-	int ret = -1;
-	int handle_fd = -1;
-	long curr_ts = 0;
-	if(!ptarget || !reason)
-		return -1;
-
-	curr_ts = time(NULL);
-	handle_fd = ptarget->fd;
-	//del from epoll
-	if(handle_fd>=0 && del_from_epoll)
-	{
-		ret = epoll_ctl(epoll_fd , EPOLL_CTL_DEL , handle_fd , NULL);
-		if(ret < 0)
-			slog_log(slogd , SL_ERR , "%s del %d from epoll list from %s failed.err:%s" , __FUNCTION__ , handle_fd , reason , strerror(errno));
-	}
-
-	close(ptarget->fd);
-	ptarget->fd = -1;
-	ptarget->connected = TARGET_CONN_NONE;
-	memset(ptarget->main_buff , 0 , sizeof(ptarget->main_buff));
-	memset(ptarget->back_buff , 0 , sizeof(ptarget->back_buff));
-	ptarget->tail = 0;
-
-	penv->bridge_info.send.reset_connect++;
-	penv->bridge_info.send.latest_reset = curr_ts;
-	ptarget->traffic.reset++;
-	ptarget->traffic.latest_reset = curr_ts;
-
-	slog_log(slogd , SL_INFO , "<%s> close target success! fd:%d proc_id:%d addr:<%s:%d>" , __FUNCTION__ , handle_fd , ptarget->proc_id ,
-			ptarget->ip_addr , ptarget->port);
-	return 0;
-}
 
 static int free_client_info(client_info_t *pclient)
 {
@@ -2150,7 +2113,7 @@ static int copy_target_info(target_info_t *pdst , target_info_t *psrc , char ini
 
 
 						//关闭原有连接并清除相关数据
-					close_target_fd(ptmp , __FUNCTION__ , 1);
+					close_target_fd(penv , ptmp , __FUNCTION__ , penv->epoll_fd , 1);
 
 						//update
 					memset(ptmp->ip_addr , 0 , sizeof(ptmp->ip_addr));
@@ -2208,7 +2171,7 @@ static int copy_target_info(target_info_t *pdst , target_info_t *psrc , char ini
 						ptarget->proc_id , ptarget->ip_addr , ptarget->port);
 
 				//close
-				close_target_fd(ptarget , "del from dst" , 1);
+				close_target_fd(penv , ptarget , "del from dst" , penv->epoll_fd , 1);
 
 				//del it
 				if(del_one_target(pdst , ptarget) != 0)
@@ -2307,7 +2270,7 @@ static int check_bridge(bridge_hub_t *phub)
 		return 0;
 
 	last_check = curr_ts;
-	slog_log(slogd , SL_DEBUG , "<%s> old attached:%d" , __FUNCTION__ , phub->attached);
+	slog_log(slogd , SL_VERBOSE , "<%s> old attached:%d" , __FUNCTION__ , phub->attached);
 
 	/***Get Read Attach*/
 	ret = shmctl(phub->shm_id , IPC_STAT , (struct shmid_ds *)&buff);

@@ -10,6 +10,7 @@
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
+#include <sys/epoll.h>
 #include <errno.h>
 #include "carrier_lib.h"
 #include "manager_lib.h"
@@ -18,7 +19,7 @@ extern int errno;
 static int send_msg_event(carrier_env_t *penv , int type , void *arg1 , void *arg2);
 static int send_msg_error(carrier_env_t *penv , int type ,  void *arg1 , void *arg2);
 static int filt_manager_proc_id(target_info_t *ptarget_info , target_detail_t *manager[] , int len);
-static int inner_send_pkg(target_detail_t *ptarget , bridge_package_t *ppkg , int pkg_len , int slogd);
+static int inner_send_pkg(carrier_env_t *penv , target_detail_t *ptarget , bridge_package_t *ppkg , int pkg_len , int slogd);
 static int handle_msg_event(manager_info_t *pmanage , int from , carrier_msg_t *pmsg);
 static int handle_msg_error(manager_info_t *pmanage , int from , carrier_msg_t *pmsg);
 static int do_manage_cmd_stat(carrier_env_t *penv , manager_cmd_req_t *preq);
@@ -232,11 +233,15 @@ int flush_target(target_detail_t *ptarget , int slogd)
 		default:
 			slog_log(slogd , SL_ERR , "%s send failed for err:%s. and will reset connection." , __FUNCTION__ , strerror(errno));
 			//此时出现错误，应主动关闭链接，用于清除本端和对端的缓冲区数据，防止错误包雪崩。并在后续进行重连
+			/*
 			close(ptarget->fd);
 			ptarget->fd = -1;
 			ptarget->connected = 0;
-			ptarget->buff = ptarget->main_buff;
-			ptarget->tail = 0;
+			if(ptarget->buff)
+				free(ptarget->buff);
+			ptarget->buff = NULL;
+			ptarget->buff_len = 0;
+			ptarget->tail = 0;*/
 			result = -1;
 		break;
 		}
@@ -245,7 +250,7 @@ int flush_target(target_detail_t *ptarget , int slogd)
 	}
 
 	//send all of data
-	if(ret >= ptarget->tail)
+	if(ret == ptarget->tail)
 	{
 		slog_log(slogd , SL_VERBOSE , "%s flush all buff success!" , __FUNCTION__ );
 		ptarget->tail = 0;
@@ -256,16 +261,7 @@ int flush_target(target_detail_t *ptarget , int slogd)
 
 	//send part of data
 	slog_log(slogd , SL_VERBOSE , "%s flush part of buff! sended:%d all:%d" , __FUNCTION__ , ret , ptarget->tail);
-	if(ptarget->buff == ptarget->main_buff)
-	{
-		memcpy(ptarget->back_buff , &ptarget->buff[ret] , ptarget->tail-ret);
-		ptarget->buff = ptarget->back_buff;
-	}
-	else
-	{
-		memcpy(ptarget->main_buff , &ptarget->buff[ret] , ptarget->tail-ret);
-		ptarget->buff = ptarget->main_buff;
-	}
+	memmove(ptarget->buff , &ptarget->buff[ret] , ptarget->tail-ret);
 	ptarget->tail = ptarget->tail - ret;
 	return 0;
 }
@@ -355,6 +351,13 @@ int send_inner_proto(carrier_env_t *penv , target_detail_t *ptarget , int proto 
 	preq = (inner_proto_t *)ppkg->pack_data;
 	slogd = penv->slogd;
 
+	if(ptarget->connected != TARGET_CONN_DONE)
+	{
+		slog_log(slogd , SL_ERR , "<%s> failed! target no-connect! target:[%s:%d] proto:%d" , __FUNCTION__ , ptarget->target_name ,
+				ptarget->proc_id , proto);
+		return -1;
+	}
+
 	/***Fill Req*/
 	preq->type = proto;
 
@@ -388,7 +391,7 @@ int send_inner_proto(carrier_env_t *penv , target_detail_t *ptarget , int proto 
 	ppkg->pack_head.pkg_type = BRIDGE_PKG_TYPE_INNER_PROTO;
 
 	/***Send*/
-	ret = inner_send_pkg(ptarget , ppkg , sizeof(pack_buff) , slogd);
+	ret = inner_send_pkg(penv , ptarget , ppkg , sizeof(pack_buff) , slogd);
 	if(ret < 0)
 	{
 		slog_log(slogd , SL_ERR , "<%s> failed! proto:%d ret:%d" , __FUNCTION__ , proto , ret);
@@ -531,6 +534,7 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 				found = 1;
 				strncpy(traffic_list.names[traffic_list.count] , ptarget->target_name , PROC_ENTRY_NAME_LEN);
 				memcpy(&traffic_list.lists[traffic_list.count] , &ptarget->traffic , sizeof(conn_traffic_t));
+				traffic_list.lists[traffic_list.count].buff_len = ptarget->buff_len;
 				traffic_list.count++;
 
 				//rotate
@@ -1053,6 +1057,111 @@ int do_verify_key(carrier_env_t *penv , char *key , int  key_len)
 	return 0;
 }
 
+//扩展发送缓冲区
+int expand_target_buff(target_detail_t *ptarget , int slogd)
+{
+	char *new_buff = NULL;
+	int new_buff_len = 0;
+	/***Arg Check*/
+	if(!ptarget)
+		return -1;
+
+	/***Set New Buff Len*/
+	if(ptarget->buff_len >= MAX_TARGET_BUFF_SIZE)
+	{
+		slog_log(slogd , SL_ERR , "<%s> failed! buff_len reaches max:%d!" , __FUNCTION__ , ptarget->buff_len);
+		return -1;
+	}
+
+	/***Try Init*/
+	if(ptarget->buff_len == 0)
+	{
+		new_buff_len = BRIDGE_PACK_LEN * 2;	//default 2 max-pkg size
+		if(ptarget->buff)	//should not happen
+		{
+			slog_log(slogd , SL_FATAL , "<%s> buff_len=0 but buff is set:0x%X! will clear ori buff" , __FUNCTION__ , ptarget->buff);
+			free(ptarget->buff);
+			ptarget->buff = NULL;
+		}
+		ptarget->buff = calloc(1 , new_buff_len);
+		if(!ptarget->buff)
+		{
+			slog_log(slogd , SL_ERR , "<%s> failed! new_buff:%d old_buff:%d" , __FUNCTION__ , new_buff_len , ptarget->buff_len);
+			return -1;
+		}
+
+		//success
+		slog_log(slogd , SL_INFO , "<%s> success! new_buff:%d old_buff:%d target:[%s:%d]" , __FUNCTION__ , new_buff_len , ptarget->buff_len ,
+				ptarget->target_name , ptarget->proc_id);
+		ptarget->buff_len = new_buff_len;
+		return 0;
+	}
+
+	/***Alloc New*/
+	if(ptarget->buff_len < (1*1024*1024))	//小于1M直接扩大1倍
+		new_buff_len = ptarget->buff_len * 2;
+	else
+		new_buff_len += (1*1024*1024);	//大于1M则每次+1M
+	new_buff = calloc(1 , new_buff_len);
+	if(!new_buff)
+	{
+		slog_log(slogd , SL_ERR , "<%s> failed! new_buff:%d old_buff:%d" , __FUNCTION__ , new_buff_len , ptarget->buff_len);
+		return -1;
+	}
+
+	/***Try Copy*/
+	slog_log(slogd , SL_INFO , "<%s> success! new_buff:%d old_buff:%d target:[%s:%d]" , __FUNCTION__ , new_buff_len , ptarget->buff_len ,
+					ptarget->target_name , ptarget->proc_id);
+	if(!ptarget->buff) //should not happen
+	{
+
+		ptarget->buff = new_buff;
+		ptarget->buff_len = new_buff_len;
+		return 0;
+	}
+
+	memcpy(new_buff , ptarget->buff , ptarget->tail);
+	free(ptarget->buff);
+	ptarget->buff = new_buff;
+	ptarget->buff_len = new_buff_len;
+	return 0;
+}
+
+int close_target_fd(carrier_env_t *penv , target_detail_t *ptarget , const char *reason , int epoll_fd , char del_from_epoll)
+{
+	int ret = -1;
+	int handle_fd = -1;
+	long curr_ts = 0;
+	if(!ptarget || !reason)
+		return -1;
+
+	curr_ts = time(NULL);
+	handle_fd = ptarget->fd;
+	//del from epoll
+	if(handle_fd>=0 && del_from_epoll)
+	{
+		ret = epoll_ctl(epoll_fd , EPOLL_CTL_DEL , handle_fd , NULL);
+		if(ret < 0)
+			slog_log(penv->slogd , SL_ERR , "%s del %d from epoll list from %s failed.err:%s" , __FUNCTION__ , handle_fd , reason , strerror(errno));
+	}
+
+	close(ptarget->fd);
+	ptarget->fd = -1;
+	ptarget->connected = TARGET_CONN_NONE;
+	if(ptarget->buff)
+		free(ptarget->buff);
+	ptarget->buff = NULL;
+	ptarget->buff_len = ptarget->tail = 0;
+
+	penv->bridge_info.send.reset_connect++;
+	penv->bridge_info.send.latest_reset = curr_ts;
+	ptarget->traffic.reset++;
+	ptarget->traffic.latest_reset = curr_ts;
+
+	slog_log(penv->slogd , SL_INFO , "<%s> close target success! fd:%d proc[%s:%d] addr:<%s:%d>" , __FUNCTION__ , handle_fd ,
+			ptarget->target_name , ptarget->proc_id , ptarget->ip_addr , ptarget->port);
+	return 0;
+}
 
 //send msg-event
 static int send_msg_event(carrier_env_t *penv , int type , void *arg1 , void *arg2)
@@ -1133,7 +1242,7 @@ static int send_msg_event(carrier_env_t *penv , int type , void *arg1 , void *ar
 		if(from == manager_list[i]->proc_id)	//if manager do not send to itself!
 			continue;
 		ppkg->pack_head.recver_id = manager_list[i]->proc_id;
-		ret = inner_send_pkg(manager_list[i] , ppkg , sizeof(pack_buff) , slogd);
+		ret = inner_send_pkg(penv , manager_list[i] , ppkg , sizeof(pack_buff) , slogd);
 
 		slog_log(slogd , SL_VERBOSE , "<%s> to manager:%d type:%d ret:%d" , __FUNCTION__ , manager_list[i]->proc_id , type , ret);
 	}
@@ -1173,7 +1282,7 @@ static int send_msg_error(carrier_env_t *penv , int type , void *arg1 , void *ar
 
 	/***Search Manager*/
 	count = filt_manager_proc_id(ptarget_info , manager_list , MANAGER_PROC_ID_MAX);
-	slog_log(slogd , SL_DEBUG , "<%s> filt manager valid count:%d" , __FUNCTION__ , count);
+	slog_log(slogd , SL_VERBOSE , "<%s> filt manager valid count:%d" , __FUNCTION__ , count);
 	if(count <= 0)
 	{
 		slog_log(slogd  ,SL_ERR , "<%s> no valid manager found! type:%d" , __FUNCTION__ , type);
@@ -1213,7 +1322,7 @@ static int send_msg_error(carrier_env_t *penv , int type , void *arg1 , void *ar
 		if(from == manager_list[i]->proc_id)	//if manager do not send to itself!
 			continue;
 		ppkg->pack_head.recver_id = manager_list[i]->proc_id;
-		ret = inner_send_pkg(manager_list[i] , ppkg , sizeof(pack_buff) , slogd);
+		ret = inner_send_pkg(penv , manager_list[i] , ppkg , sizeof(pack_buff) , slogd);
 
 		slog_log(slogd , SL_VERBOSE , "<%s> to manager:%d type:%d ret:%d" , __FUNCTION__ , manager_list[i]->proc_id , type , ret);
 	}
@@ -1259,7 +1368,7 @@ static int filt_manager_proc_id(target_info_t *ptarget_info , target_detail_t *m
 	return count;
 }
 
-static int inner_send_pkg(target_detail_t *ptarget , bridge_package_t *ppkg , int pkg_len , int slogd)
+static int inner_send_pkg(carrier_env_t *penv , target_detail_t *ptarget , bridge_package_t *ppkg , int pkg_len , int slogd)
 {
 	int ret = -1;
 	unsigned int stlv_len = 0;
@@ -1272,7 +1381,16 @@ static int inner_send_pkg(target_detail_t *ptarget , bridge_package_t *ppkg , in
 		slog_log(slogd , SL_ERR , "<%s> failed! pack_len:%d illegal!" , __FUNCTION__ , pkg_len);
 		return -1;
 	}
-
+	/***Check Init*/
+	if(ptarget->buff_len==0 || !ptarget->buff)
+	{
+		ret = expand_target_buff(ptarget , slogd);
+		if(ret < 0)
+		{
+			slog_log(slogd , SL_ERR , "<%s> init target:[%s:%d] buff failed! drop pkg!" , __FUNCTION__ , ptarget->target_name , ptarget->proc_id);
+			return -1;
+		}
+	}
 
 	/***Try Flush Target*/
 	if(ptarget->tail > 0)
@@ -1280,19 +1398,26 @@ static int inner_send_pkg(target_detail_t *ptarget , bridge_package_t *ppkg , in
 		slog_log(slogd , SL_VERBOSE , "%s is sending old package to %d. data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
 		ret = flush_target(ptarget , slogd);
 		if(ret < 0)	//出现无法恢复错误，则已经重置链接 丢弃当前包
+		{
+			close_target_fd(penv , ptarget , __FUNCTION__ , penv->epoll_fd , 1);
 			return -1;
+		}
 	}
 
 	/***Send Current Pack*/
 	//1.如果缓冲区未空，则说明当前不能发送，在STLV包之后投入缓冲区
 	if(ptarget->tail > 0)
 	{
-		//剩余缓冲区空间不足以放入则丢弃了
-		if((sizeof(ptarget->main_buff) - ptarget->tail) < (STLV_PACK_SAFE_LEN(pkg_len)))
+		//剩余缓冲区空间不足则扩展缓冲区
+		if((ptarget->buff_len - ptarget->tail) < (STLV_PACK_SAFE_LEN(pkg_len)))
 		{
-			slog_log(slogd , SL_ERR , "<%s> drop package. flush buff imcomplete. but target buff left space is too small! left:%d proper:%d" ,
-					__FUNCTION__ , sizeof(ptarget->main_buff) - ptarget->tail , STLV_PACK_SAFE_LEN(pkg_len));
-			return -1;
+			ret = expand_target_buff(ptarget , slogd);
+			if(ret < 0)
+			{
+				slog_log(slogd , SL_ERR , "<%s> drop package. flush buff imcomplete. but target buff left space is too small! left:%d proper:%d" ,
+						__FUNCTION__ , ptarget->buff_len - ptarget->tail , STLV_PACK_SAFE_LEN(pkg_len));
+				return -1;
+			}
 		}
 
 		//pack
@@ -1323,7 +1448,12 @@ static int inner_send_pkg(target_detail_t *ptarget , bridge_package_t *ppkg , in
 	ptarget->latest_ts = time(NULL);
 	ptarget->ready_count = 1;
 	slog_log(slogd , SL_VERBOSE , "<%s> is sending curr package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
-	flush_target(ptarget , slogd);
+	ret = flush_target(ptarget , slogd);
+	if(ret < 0)
+	{
+		close_target_fd(penv , ptarget , __FUNCTION__ , penv->epoll_fd , 1);
+		return -1;
+	}
 	return 0;
 }
 
@@ -1790,6 +1920,13 @@ static int do_manage_cmd_proto(carrier_env_t *penv , manager_cmd_req_t *preq)
 			send_back = 1;
 			break;
 		}
+		if(ptarget->connected != TARGET_CONN_DONE)
+		{
+			slog_log(slogd , SL_ERR , "<%s> PING %s Target Not Connect!" , __FUNCTION__ , psub_req->arg);
+			psub_rsp->result = -2;
+			send_back = 1;
+			break;
+		}
 
 		//match send to server
 		ret = send_inner_proto(penv , ptarget , INNER_PROTO_PING , NULL , NULL);
@@ -1836,6 +1973,13 @@ static int do_manage_cmd_proto(carrier_env_t *penv , manager_cmd_req_t *preq)
 		if(!ptarget)
 		{
 			slog_log(slogd , SL_ERR , "<%s> TRAFFIC %s Target not found!" , __FUNCTION__ , arg);
+			send_back = 1;
+			break;
+		}
+		if(ptarget->connected != TARGET_CONN_DONE)
+		{
+			slog_log(slogd , SL_ERR , "<%s> TRAFFIC %s Target Not Connect!" , __FUNCTION__ , psub_req->arg);
+			psub_rsp->result = -2;
 			send_back = 1;
 			break;
 		}

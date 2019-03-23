@@ -481,7 +481,7 @@ static int child_process()
 			continue;
 
 		//print
-		printf("read bridge pkg! recved:%d recv_len:%d type:%d\n" , ret , sizeof(rsp) , rsp.type);
+		//printf("read bridge pkg! recved:%d recv_len:%d type:%d\n" , ret , sizeof(rsp) , rsp.type);
 		switch(rsp.type)
 		{
 		case MANAGER_CMD_STAT:
@@ -759,7 +759,10 @@ static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 	/***Print Body*/
 	if(psub->result < 0)
 	{
-		fprintf(penv->fp_out , "No Result Found!  Please check!\n");
+		if(psub->result == -1)
+			fprintf(penv->fp_out , "No Result Found!  Please check!\n");
+		if(psub->result == -2)
+			fprintf(penv->fp_out , "Not Connected Yet!  Please check!\n");
 		return -1;
 	}
 
@@ -770,19 +773,22 @@ static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 		fprintf(penv->fp_out , "PONG\n");
 		break;
 	case CMD_PROTO_T_TRAFFIC:
-		fprintf(penv->fp_out , "%-32s %-10s %-10s %-10s %-10s %-10s %-10s %-20s %-10s %-20s \n\n" , " " , "opted" , "opting" , "max_size" , "min_size" , "ave_size" ,
-							"dropped" , "latest_drop" , "reseted" ,  "latest_reset");
+		fprintf(penv->fp_out , "%-32s %-10s %-10s %-10s %-10s %-10s %-10s %-20s %-10s %-20s %-10s\n\n" , " " , "opted" , "opting" , "max_size" , "min_size" , "ave_size" ,
+							"dropped" , "latest_drop" , "reseted" ,  "latest_reset" , "conn_buff");
+		fprintf(penv->fp_out , "-----------------------------------------------------\n");
 		for(i=0; i<psub->traffic_list.count ; i++)
 		{
 			ptraffic = &psub->traffic_list.lists[i];
-
+			memset(buff , 0 , sizeof(buff));
+			memset(buff2 , 0 , sizeof(buff2));
 			buff[0] = buff2[0] = '-';
 			if(ptraffic->latest_drop > 0)
 				snprintf(buff , sizeof(buff) , "%s" , format_time_stamp(ptraffic->latest_drop));
 			if(ptraffic->latest_reset > 0)
 				snprintf(buff2 , sizeof(buff2) , "%s" , format_time_stamp(ptraffic->latest_reset));
-			fprintf(penv->fp_out , ">>%-32s %-10u %-10u %-10u %-10u %-10u %-10u %-20s %-10u %-20s \n\n" , psub->traffic_list.names[i] ,
-					ptraffic->handled , ptraffic->handing , ptraffic->max_size , ptraffic->min_size , ptraffic->ave_size ,ptraffic->dropped ,buff , ptraffic->reset ,  buff2);
+			fprintf(penv->fp_out , ">>%-32s %-10u %-10u %-10u %-10u %-10u %-10u %-20s %-10u %-20s %-10d \n\n" , psub->traffic_list.names[i] ,
+					ptraffic->handled , ptraffic->handing , ptraffic->max_size , ptraffic->min_size , ptraffic->ave_size ,ptraffic->dropped ,buff , ptraffic->reset ,  buff2 ,
+					ptraffic->buff_len);
 		}
 		break;
 	default:

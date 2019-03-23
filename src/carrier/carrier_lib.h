@@ -67,6 +67,7 @@ typedef struct _conn_traffic_t
 	long latest_drop;	//最近一次丢包
 	unsigned int reset; //链接重置数
 	long latest_reset;	//最近一次重置
+	int buff_len;	//buff size
 }conn_traffic_t;
 #define MAX_CONN_TRAFFIC_PER_PKG 50
 
@@ -85,6 +86,8 @@ typedef struct _traffic_list_t
 #define TARGET_CONN_DONE 1 //已连接
 #define TARGET_CONN_PROC 2	//正在连接
 
+#define MAX_TARGET_BUFF_SIZE (10*1024*1024) //单个target可扩展到的最大缓冲区长度[可配置]
+
 typedef struct _target_detail
 {
 	char connected;	/*是否已经链接*/
@@ -98,8 +101,9 @@ typedef struct _target_detail
 	int ready_count;		//缓冲区里待发送的包数目 只是粗略计数
 	int tail;	// tail of valid data in buff
 	char *buff;
-	char main_buff[BRIDGE_PACK_LEN * 5];
-	char back_buff[BRIDGE_PACK_LEN * 5];
+	int buff_len;
+	//char main_buff[BRIDGE_PACK_LEN * 5];
+	//char back_buff[BRIDGE_PACK_LEN * 5];
 	conn_traffic_t traffic;
 }target_detail_t;
 
@@ -221,6 +225,7 @@ typedef struct _carrier_env_t
 	char cfg_file_name[128];
 	int proc_id;
 	int slogd;	//slog descriptor
+	int epoll_fd;
 	long started_ts;	//启动时间
 	manager_info_t *pmanager;	//only for manager proc
 	target_info_t *ptarget_info;
@@ -366,5 +371,9 @@ extern int append_recv_channel(bridge_hub_t *phub , char *pstpack);
 extern int gen_verify_key(carrier_env_t *penv , char *key , int key_len);
 //校验key
 extern int do_verify_key(carrier_env_t *penv , char *key , int  key_len);
+//扩展发送缓冲区
+extern int expand_target_buff(target_detail_t *ptarget , int slogd);
+//关闭target
+extern int close_target_fd(carrier_env_t *penv , target_detail_t *ptarget , const char *reason , int epoll_fd , char del_from_epoll);
 
 #endif /* CARRIER_LIB_H_*/
