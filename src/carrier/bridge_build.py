@@ -26,7 +26,8 @@ manager_dict = {};
 proc_dict = {}
 
 #get version
-PY_VERSION = sys.version_info.major;
+#PY_VERSION = sys.version_info.major;
+PY_VERSION = int(sys.version[0]);
 print("version:%d" % (PY_VERSION));
 
 #version set
@@ -1014,7 +1015,7 @@ def create_cfg():
 	print("create_cfg success!")
 		
 def show_help():
-	print("usage:./bridge_build.py <OPTION>")
+	print("usage:./bridge_build.py <OPTION> or python ./bridge_build.py <OPTION>")
 	print("OPTION:")
 	print("-h: show help")
 	print("-a: deploy and build all proc bridges")
