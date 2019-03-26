@@ -27,7 +27,7 @@ extern int errno;
 #define CMD_STR_SYS_ERR "PROB-SYS"
 #define CMD_STR_ANY_ERR "PROB-ANY"
 #define CMD_STR_PING "PING"
-#define CMD_STR_TRAFFIC "TRAFFIC"
+#define CMD_STR_TRAFFIC "ROUTE"
 
 /************END**************/
 
@@ -217,7 +217,7 @@ static int show_cmd()
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] show probable connection problems  of <proc_name>[*]\n" , CMD_STR_CONN_ERR);
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] show probable sys problems  of <proc_name>[*]\n" , CMD_STR_SYS_ERR);
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] show all probable problems of net or sys of <proc_name>[*]\n" , CMD_STR_ANY_ERR);
-	fprintf(penv->fp_out , "【%s】 <src_proc_name> <dst_proc_name>[*] show bridge traffic from src to dst* \n" , CMD_STR_TRAFFIC);
+	fprintf(penv->fp_out , "【%s】 <src_proc_name> <dst_proc_name>[*] show bridge route from src to dst* and recv-data if exists\n" , CMD_STR_TRAFFIC);
 	fprintf(penv->fp_out , "【%s】 exit manager tool\n" , CMD_STR_EXIT);
 	fprintf(penv->fp_out , "+--------------------------+\n");
 	return 0;
@@ -786,7 +786,11 @@ static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 				snprintf(buff , sizeof(buff) , "%s" , format_time_stamp(ptraffic->latest_drop));
 			if(ptraffic->latest_reset > 0)
 				snprintf(buff2 , sizeof(buff2) , "%s" , format_time_stamp(ptraffic->latest_reset));
-			fprintf(penv->fp_out , ">>%-32s %-10u %-10u %-10u %-10u %-10u %-10u %-20s %-10u %-20s %-10d \n\n" , psub->traffic_list.names[i] ,
+			if(ptraffic->type==0)
+				fprintf(penv->fp_out , ">>");
+			else
+				fprintf(penv->fp_out , "<<");
+			fprintf(penv->fp_out , "%-32s %-10u %-10u %-10u %-10u %-10u %-10u %-20s %-10u %-20s %-10d \n\n" , psub->traffic_list.names[i] ,
 					ptraffic->handled , ptraffic->handing , ptraffic->max_size , ptraffic->min_size , ptraffic->ave_size ,ptraffic->dropped ,buff , ptraffic->reset ,  buff2 ,
 					ptraffic->buff_len);
 		}

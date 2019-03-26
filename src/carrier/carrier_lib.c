@@ -9,6 +9,7 @@
 #include <slog/slog.h>
 #include <string.h>
 #include <time.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <sys/epoll.h>
 #include <errno.h>
@@ -369,12 +370,13 @@ int send_inner_proto(carrier_env_t *penv , target_detail_t *ptarget , int proto 
 		strncpy(preq->data.proc_name , (char *)arg1 , sizeof(preq->data.proc_name));
 		break;
 	case INNER_PROTO_VERIFY_REQ:
+		strncpy(preq->arg , penv->proc_name , sizeof(preq->arg));
 		strncpy(preq->data.verify_key , (char *)arg1 , sizeof(preq->data.verify_key));
 		break;
-	case INNER_PROTO_CONN_TRAFFIC_REQ:
+	case INNER_PROTO_SEND_TRAFFIC_REQ:
 		strncpy(preq->arg , (char *)arg1 , sizeof(preq->arg));
 		break;
-	case INNER_PROTO_CONN_TRAFFIC_RSP:
+	case INNER_PROTO_SEND_TRAFFIC_RSP:
 		strncpy(preq->arg , (char *)arg1 , sizeof(preq->arg));
 		memcpy(&preq->data.traffic_list , (traffic_list_t *)arg2 , sizeof(traffic_list_t));
 		break;
@@ -417,6 +419,8 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 	inner_proto_t *preq = NULL;
 	target_detail_t *ptarget = NULL;
 	target_detail_t *ptarget_from = NULL;
+
+	client_info_t *pevery_client = NULL;
 
 	char bridge_pack_buff[GET_PACK_LEN(sizeof(manager_cmd_rsp_t))] = {0};
 	bridge_package_t *pbridge_pkg;
@@ -493,14 +497,15 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 		{
 			pclient->verify = 1;
 			pclient->proc_id = ppkg->pack_head.sender_id;
-			slog_log(slogd , SL_INFO , "<%s> verify success! client proc_id:%d located %d<%s:%d>" , __FUNCTION__ , pclient->proc_id ,
-					pclient->fd ,	pclient->client_ip , pclient->client_port);
+			strncpy(pclient->proc_name , preq->arg , sizeof(pclient->proc_name));
+			slog_log(slogd , SL_INFO , "<%s> verify success! client fd:%d [%s:%d]<%s:%d>" , __FUNCTION__ , 	pclient->fd ,
+					pclient->proc_name , pclient->proc_id , pclient->client_ip , pclient->client_port);
 		}
 		else
 			slog_log(slogd , SL_ERR , "<%s> verify failed! " , __FUNCTION__);
 	break;
 
-	case INNER_PROTO_CONN_TRAFFIC_REQ:
+	case INNER_PROTO_SEND_TRAFFIC_REQ:
 		if(!pclient->verify)
 					break;
 		//from
@@ -525,6 +530,8 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 		//select
 		memset(&traffic_list , 0 , sizeof(traffic_list));
 		strncpy(traffic_list.owner , penv->proc_name , sizeof(traffic_list.owner));
+
+		//send route
 		ptarget = penv->ptarget_info->head.next;
 		while(ptarget)
 		{
@@ -540,7 +547,7 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 				//rotate
 				if(traffic_list.count >= MAX_CONN_TRAFFIC_PER_PKG)
 				{
-					ret = send_inner_proto(penv , ptarget_from , INNER_PROTO_CONN_TRAFFIC_RSP , preq->arg , (char *)&traffic_list);
+					ret = send_inner_proto(penv , ptarget_from , INNER_PROTO_SEND_TRAFFIC_RSP , preq->arg , (char *)&traffic_list);
 					if(ret < 0)
 						slog_log(slogd , SL_ERR , "<%s> send Refreshing INNER_PROTO_CONN_TRAFFIC_RSP from %d failed!" , __FUNCTION__ , pclient->proc_id);
 					//refresh
@@ -551,16 +558,47 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 
 			ptarget = ptarget->next;
 		}
+
+		//recv route
+		pevery_client = penv->pclient_list->list;
+		while(pevery_client)
+		{
+			//match
+			if(pevery_client->verify && (select_all || strncmp(arg , pevery_client->proc_name , strlen(arg))==0))
+			{
+				found = 1;
+				strncpy(traffic_list.names[traffic_list.count] , pevery_client->proc_name , PROC_ENTRY_NAME_LEN);
+				memcpy(&traffic_list.lists[traffic_list.count] , &pevery_client->traffic , sizeof(conn_traffic_t));
+				//traffic_list.lists[traffic_list.count].buff_len = ptarget->buff_len;
+				traffic_list.lists[traffic_list.count].type = 1;
+				traffic_list.lists[traffic_list.count].reset = -1;	//no use
+				traffic_list.count++;
+
+				//rotate
+				if(traffic_list.count >= MAX_CONN_TRAFFIC_PER_PKG)
+				{
+					ret = send_inner_proto(penv , ptarget_from , INNER_PROTO_SEND_TRAFFIC_RSP , preq->arg , (char *)&traffic_list);
+					if(ret < 0)
+						slog_log(slogd , SL_ERR , "<%s> send Refreshing INNER_PROTO_CONN_TRAFFIC_RSP from %d failed!" , __FUNCTION__ , pclient->proc_id);
+					//refresh
+					traffic_list.count = 0;
+					strncpy(traffic_list.owner , penv->proc_name , sizeof(traffic_list.owner));
+				}
+			}
+
+			pevery_client = pevery_client->next;
+		}
+
 		//final pkg
 		if(found==0 || traffic_list.count>0)
 		{
-			ret = send_inner_proto(penv , ptarget_from , INNER_PROTO_CONN_TRAFFIC_RSP , preq->arg , (char *)&traffic_list);
+			ret = send_inner_proto(penv , ptarget_from , INNER_PROTO_SEND_TRAFFIC_RSP , preq->arg , (char *)&traffic_list);
 			if(ret < 0)
 				slog_log(slogd , SL_ERR , "<%s> send Final INNER_PROTO_CONN_TRAFFIC_RSP from %d failed!" , __FUNCTION__ , pclient->proc_id);
 		}
 	break;
 
-	case INNER_PROTO_CONN_TRAFFIC_RSP:
+	case INNER_PROTO_SEND_TRAFFIC_RSP:
 		if(!pclient->verify)
 			break;
 		slog_log(slogd  , SL_DEBUG , "<%s> rsp from %d. arg is:%s count:%d" , __FUNCTION__ , pclient->proc_id , preq->arg , preq->data.traffic_list.count);
@@ -1613,6 +1651,7 @@ char *format_time_stamp(long ts)
 	return time_buff;
 }
 
+
 static int do_manage_cmd_stat(carrier_env_t *penv , manager_cmd_req_t *preq)
 {
 	char bridge_pack_buff[GET_PACK_LEN(sizeof(manager_cmd_rsp_t))];
@@ -1985,7 +2024,7 @@ static int do_manage_cmd_proto(carrier_env_t *penv , manager_cmd_req_t *preq)
 		}
 
 		//match send to server
-		ret = send_inner_proto(penv , ptarget , INNER_PROTO_CONN_TRAFFIC_REQ , p , NULL);
+		ret = send_inner_proto(penv , ptarget , INNER_PROTO_SEND_TRAFFIC_REQ , p , NULL);
 		if(ret != 0)
 		{
 			slog_log(slogd , SL_ERR , "<%s> Send Inner Proto to %s Failed!" , __FUNCTION__ , arg);

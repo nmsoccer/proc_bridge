@@ -12,7 +12,7 @@ function make()
   gcc -g -Wall -I${HEADER_FILE} bridge_manager.c ${LIB_FILE} ${DYN_LIBS} -o manager
   gcc -g -w -I${HEADER_FILE} create_bridge.c ${LIB_FILE} ${DYN_LIBS} -o creater
   gcc -g -w -I${HEADER_FILE} delete_bridge.c ${LIB_FILE} ${DYN_LIBS} -o deleter
-  gcc -g -Wall -I${HEADER_FILE} bridge_carrier.c ${LIB_FILE} ${DYN_LIBS} -o carrier
+  gcc -g -Wall -I${HEADER_FILE} bridge_carrier.c ./carrier_base.c ${LIB_FILE} ${DYN_LIBS} -o carrier
   #gcc -g -Wall test_proc.c -lslog -lstlv -lproc_bridge -lm  -o tester
   echo "compiling finish"
 }

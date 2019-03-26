@@ -30,18 +30,22 @@
 #include <netinet/tcp.h>
 #include <stlv/stlv.h>
 #include "proc_bridge.h"
+#include "carrier_base.h"
 #include "carrier_lib.h"
 #include "manager_lib.h"
 
 #define DEFAULT_CFG_FILE "./carrier.cfg"	//default cfg file
 
 #define MY_LOG_NAME "carrier.log"
-#define INFO_NORMAL SL_DEBUG
-#define INFO_MAIN	SL_INFO
-#define INFO_ERR	SL_ERR
+//#define INFO_NORMAL SL_DEBUG
+//#define INFO_MAIN	SL_INFO
+//#define INFO_ERR	SL_ERR
 static int slogd = -1; //slog descriptor
 
 //#define MAX_SEND_COUNT	10	//每tick最多发送的包数
+#define MS_PER_TICK 100 //每tick毫秒数 100ms
+#define MAX_DISPATCH_BRIDGE_MS 50 //每tick最多花50毫秒来读取并发送bridge里的数据
+
 #define MAX_EPOLL_QUEUE (1024*2)
 
 #define LEN_TAG (sizeof(short))
@@ -59,12 +63,12 @@ static carrier_env_t *penv;
 
 static void handle_signal(int sig);
 //static int carrier_print_info(char type , void *file , ...);
-static int connect_to_remote(void);
+static int  connect_to_remote(void *arg);
 static void handle_connecting_fd(target_detail_t *ptarget , struct epoll_event *pevent);
 static int handle_target_fd(target_detail_t *ptarget , struct epoll_event *pevent);
 //static int close_target_fd(target_detail_t *ptarget , const char *reason , int epoll_fd , char del_from_epoll);
 static int parse_target_list(char *target_list , target_detail_t *ptarget);
-static int dispatch_bridge(void);
+static int dispatch_bridge(int reward_ms);
 static int show_help(void);
 static int set_nonblock(int fd);
 static int fetch_send_channel(bridge_hub_t *phub , char *buff);
@@ -78,14 +82,14 @@ static int free_target_info(target_info_t *ptarget_info);
 static int copy_target_info(target_info_t *pdst , target_info_t *psrc , char init);
 static int del_one_target(target_info_t *ptarget_info , target_detail_t *ptarget);
 static void demon_proc();
-static int world_tick();
-static int check_bridge(bridge_hub_t *phub);
-static int manage_tick_print();
+static int add_ticker(carrier_env_t *penv);
+static int check_bridge(void *arg);
+static int manage_tick_print(void *arg);
 static int print_bridge_info(bridge_hub_t *phub);
 static int set_sock_option(int sock_fd , int send_size , int recv_size , int no_delay);
-static int check_client_info(carrier_env_t *penv);
-static int check_run_statistics(carrier_env_t *penv);
-static int check_signal_stat(carrier_env_t *penv);
+static int check_client_info(void *arg);
+static int check_run_statistics(void *arg);
+static int check_signal_stat(void *arg);
 
 //static bridge_hub_t *phub = NULL;
 //static int epoll_fd;
@@ -117,9 +121,16 @@ int main(int argc , char **argv)
 	//struct epoll_event ep_event_list[MAX_EPOLL_QUEUE];
 	char buff[1024] = {0};
 	char is_target_sock = 0;
+	//cost
+	int cost_ms = 0;
+	int reward_ms = 0;
+	int total_cost = 0;
+	long start_ms = 0;
+	long end_ms = 0;
 
 	/***Open Log*/
 	memset(&slog_option , 0 , sizeof(slog_option));
+	//slog_option.log_degree = SLD_MILL;
 	strncpy(slog_option.type_value._local.log_name , MY_LOG_NAME , sizeof(slog_option.type_value._local.log_name));
 	slogd = slog_open(SLT_LOCAL , SL_DEBUG , &slog_option , NULL);
 	if(slogd < 0)
@@ -383,6 +394,14 @@ int main(int argc , char **argv)
 
 	}
 
+	/***Append Ticker*/
+	ret = add_ticker(penv);
+	if(ret < 0)
+	{
+		slog_log(slogd , SL_ERR , "main:add ticker failed!");
+		return -1;
+	}
+
 	/***Started*/
 	penv->started_ts = time(NULL);
 	srand(penv->started_ts);
@@ -390,14 +409,26 @@ int main(int argc , char **argv)
 	/***Main Logic*/
 	while(1)
 	{
+		cost_ms = 0;
+		total_cost = 0;
+		start_ms = get_curr_ms();
+
 		//world_tick
-		world_tick();
+		//cost_ms = world_tick();
+		cost_ms = iter_time_ticker(penv);
+		slog_log(penv->slogd , SL_VERBOSE , "main:iter_ticker:cost:%ld" , cost_ms);
+		total_cost += cost_ms;
+
+		/*取包发送*/
+		cost_ms = dispatch_bridge(reward_ms);
+		slog_log(penv->slogd , SL_VERBOSE , "main:dispatch_bridge:cost:%ld" , cost_ms);
+		total_cost += cost_ms;
 
 		/*epoll wait*/
-		active_fds = epoll_wait(penv->epoll_fd , ep_event_list , MAX_EPOLL_QUEUE , 200);
+		active_fds = epoll_wait(penv->epoll_fd , ep_event_list , MAX_EPOLL_QUEUE , (MS_PER_TICK-total_cost)<=0?1:(MS_PER_TICK-total_cost));
 		if(active_fds < 0)
 		{
-			slog_log(slogd , SL_DEBUG , "epoll_wait err:%s" , strerror(errno));
+			slog_log(slogd , SL_VERBOSE , "epoll_wait err:%s" , strerror(errno));
 			//continue;
 		}
 
@@ -507,10 +538,22 @@ int main(int argc , char **argv)
 
 		}
 
-		/*取包发送*/
-		dispatch_bridge();
-
-		/*ticked*/
+		//calc reward
+		if(active_fds == 0)	//等待了一个完整剩余时间，说明此段时间网络空闲，则奖励给下次dispatch多5ms
+		{
+			reward_ms += 5;
+			reward_ms = reward_ms>=40?40:reward_ms; //奖励最多不超过40ms.所以理论上最多有90%的时间可以用来读取bridge并分发
+		}
+		else	//如果未等待则检查sleep时间
+		{
+			reward_ms = 0;
+			end_ms = get_curr_ms();
+			if((end_ms-start_ms) >= MS_PER_TICK)
+				usleep(1000);
+			else
+				usleep((end_ms-start_ms)*1000);
+		}
+		slog_log(penv->slogd , SL_VERBOSE , "main:tick:reward_ms:%d" , reward_ms);
 	}
 
 }
@@ -715,7 +758,7 @@ static int parse_target_list(char *target_list , target_detail_t *ptarget)
 /*
  * 链接到远程carrier
  */
-static int connect_to_remote(void)
+static int  connect_to_remote(void *arg)
 {
 	struct sockaddr_in remote_addr;
 	struct epoll_event ep_event;
@@ -724,29 +767,23 @@ static int connect_to_remote(void)
 	int remote_socket;
 	int count = 0;
 	int ret = -1;
-	static long last_update = 0;
 	long curr_ts = 0;
 	int connected = 0;
 	static char need_report = 0;
 	manage_item_t *pitem = NULL;
+	carrier_env_t *penv = (carrier_env_t *)arg;
 
 	//check circle
-	curr_ts = time(NULL);
-
-	if((curr_ts-last_update) < 10)	//10secs
+	if(!need_report)
 	{
-		return 0;
-	}
-	if((curr_ts-carrier_env.started_ts) >= 20)	//进程拉起前20秒不用上报，等待路由建立
-	{
-		if(need_report == 0)
+		curr_ts = time(NULL);
+		if((curr_ts-carrier_env.started_ts) >= 20)	//进程拉起前20秒不用上报，等待路由建立
 		{
 			send_carrier_msg(&carrier_env , CR_MSG_EVENT , MSG_EVENT_T_START , &(carrier_env.started_ts) , NULL);
 			need_report = 1;
 		}
 	}
 
-	last_update = curr_ts;
 	if(target_info.target_count <= 0)
 		return 0;
 
@@ -882,8 +919,9 @@ static int connect_to_remote(void)
 
 /*
  * 读proc发送的包到相应的fd
+ * reward_ms:奖励给该函数的毫秒数.它源于上一次epoll_wait的等待时长
  */
-static int dispatch_bridge(void)
+static int dispatch_bridge(int reward_ms)
 {
 	bridge_package_t *pstpack;
 	target_detail_t *ptarget = NULL;
@@ -893,7 +931,10 @@ static int dispatch_bridge(void)
 	unsigned int stlv_len = 0;
 	int ret = 0;
 	bridge_info_t *pbridge_info = &penv->bridge_info;
-	long curr_ts = time(NULL);
+	long curr_ts = 0;
+	long enter_ms = get_curr_ms();
+	long curr_ms = 0;
+	long end_ms = 0;
 
 	while(1)
 	{
@@ -916,6 +957,11 @@ static int dispatch_bridge(void)
 			break;
 		}
 
+		curr_ms = get_curr_ms();
+		if((curr_ms - enter_ms) >= MAX_DISPATCH_BRIDGE_MS+reward_ms)	//超出每tick最大限额
+			break;
+
+		curr_ts = curr_ms/1000;
 		slog_log(slogd , SL_DEBUG , "%s fetch pack success! len:%d and target:%d ts:%ld" , __FUNCTION__ , bridge_pack_len , pstpack->pack_head.recver_id ,
 				pstpack->pack_head.send_ts);
 		//manager获得的包都源于manager_tool 一般不作转发
@@ -1096,11 +1142,15 @@ static int dispatch_bridge(void)
 
 	}
 
-	return 0;
+	end_ms = get_curr_ms();
+	return (end_ms-enter_ms);
 }
+
+
 
 static int read_client_socket(int fd , bridge_hub_t *phub)
 {
+
 	char pack_buff[BRIDGE_PACK_LEN];
 	proc_entry_t proc_entry;
 	//char *next_buff = NULL;
@@ -1284,6 +1334,14 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 			else
 				pbridge_info->recv.min_pkg_size = (recv_pkg->pack_head.data_len<pbridge_info->recv.min_pkg_size)?recv_pkg->pack_head.data_len:pbridge_info->recv.min_pkg_size;
 			pbridge_info->recv.ave_pkg_size = (pbridge_info->recv.ave_pkg_size*(pbridge_info->recv.handled-1)+recv_pkg->pack_head.data_len)/pbridge_info->recv.handled;
+			//traffic
+			pclient->traffic.handled++;
+			pclient->traffic.max_size = (recv_pkg->pack_head.data_len>pclient->traffic.max_size)?recv_pkg->pack_head.data_len:pclient->traffic.max_size;
+			if(pclient->traffic.min_size <= 0)
+				pclient->traffic.min_size = recv_pkg->pack_head.data_len;
+			else
+				pclient->traffic.min_size = (recv_pkg->pack_head.data_len<pclient->traffic.min_size)?recv_pkg->pack_head.data_len:pclient->traffic.min_size;
+			pclient->traffic.ave_size = (pclient->traffic.ave_size*(pclient->traffic.handled-1)+recv_pkg->pack_head.data_len)/pclient->traffic.handled;
 
 			//dispatch
 			ret = append_recv_channel(phub , pack_buff);
@@ -1296,6 +1354,8 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 								((bridge_package_t*)pack_buff)->pack_head.recver_id , ((bridge_package_t*)pack_buff)->pack_head.data_len);
 				pbridge_info->recv.dropped++;
 				pbridge_info->recv.latest_drop = curr_ts;
+				pclient->traffic.dropped++;
+				pclient->traffic.latest_drop = curr_ts;
 			}
 			else
 			{
@@ -1303,6 +1363,8 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 								((bridge_package_t*)pack_buff)->pack_head.recver_id , ((bridge_package_t*)pack_buff)->pack_head.data_len);
 				pbridge_info->recv.dropped++;
 				pbridge_info->recv.latest_drop = curr_ts;
+				pclient->traffic.dropped++;
+				pclient->traffic.latest_drop = curr_ts;
 			}
 		}
 
@@ -1507,15 +1569,72 @@ static int flush_target(target_detail_t *ptarget)
 }
 */
 
+/*
 static int world_tick()
 {
-	connect_to_remote();
+	long start_ms = get_curr_ms();
+	connect_to_remote(penv);
 	if(penv->proc_id <= MANAGER_PROC_ID_MAX)	//manager
-		manage_tick_print();
-	check_bridge(penv->phub);
+		manage_tick_print(penv);
+	check_bridge(penv);
 	check_client_info(penv);
 	check_run_statistics(penv);
 	check_signal_stat(penv);
+	return (get_curr_ms()-start_ms);
+}*/
+
+static int add_ticker(carrier_env_t *penv)
+{
+	int ret = -1;
+	int slogd = penv->slogd;
+
+	/***Add*/
+	ret = append_carrier_ticker(penv , connect_to_remote , TIME_TICKER_T_CIRCLE , TICK_CONNECT_TO_REMOTE , "connect_to_remote" ,
+			(void *)penv);
+	if(ret < 0)
+	{
+		slog_log(slogd , SL_ERR , "<%s> add connect_to_remote failed!" , __FUNCTION__);
+		return -1;
+	}
+	if(penv->proc_id <= MANAGER_PROC_ID_MAX)
+	{
+		ret = append_carrier_ticker(penv , manage_tick_print , TIME_TICKER_T_CIRCLE , TICK_MANAGE_PRINT , "manage_tick_print" ,
+				penv);
+		if(ret < 0)
+		{
+			slog_log(slogd , SL_ERR , "<%s> add manage_tick_print failed!" , __FUNCTION__);
+			return -1;
+		}
+	}
+	ret = append_carrier_ticker(penv , check_bridge , TIME_TICKER_T_CIRCLE , TICK_CHECK_BRIDGE , "check_bridge" ,
+			penv);
+	if(ret < 0)
+	{
+		slog_log(slogd , SL_ERR , "<%s> add check_bridge failed!" , __FUNCTION__);
+		return -1;
+	}
+	ret = append_carrier_ticker(penv , check_client_info , TIME_TICKER_T_CIRCLE , TICK_CHECK_CLIENT_INFO , "check_client_info" ,
+			penv);
+	if(ret < 0)
+	{
+		slog_log(slogd , SL_ERR , "<%s> add check_client_info failed!" , __FUNCTION__);
+		return -1;
+	}
+	ret = append_carrier_ticker(penv , check_run_statistics , TIME_TICKER_T_CIRCLE , TICK_CHECK_RUN_STATISTICS , "check_run_statistics" ,
+			penv);
+	if(ret < 0)
+	{
+		slog_log(slogd , SL_ERR , "<%s> add check_run_statistics failed!" , __FUNCTION__);
+		return -1;
+	}
+	ret = append_carrier_ticker(penv , check_signal_stat , TIME_TICKER_T_CIRCLE , TICK_CHECK_SIG_STAT , "check_signal_stat" ,
+			penv);
+	if(ret < 0)
+	{
+		slog_log(slogd , SL_ERR , "<%s> add check_signal_stat failed!" , __FUNCTION__);
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -2242,35 +2361,24 @@ static int del_one_target(target_info_t *ptarget_info , target_detail_t *ptarget
 	return -1;
 }
 
-static int manage_tick_print()
+static int manage_tick_print(void *arg)
 {
-	static long last_print = 0;
-	long curr_ts = 0;
-
-	curr_ts = time(NULL);
-	if((curr_ts - last_print) < 10)
-		return 0;
-
-	last_print = curr_ts;
+	carrier_env_t *penv = (carrier_env_t *)arg;
 	print_manage_info(penv);
 	return 0;
 }
 
-static int check_bridge(bridge_hub_t *phub)
+static int check_bridge(void *arg)
 {
 	struct shmid_ds buff;
-	static long last_check = 0;  //初始检查时间
-	long curr_ts = 0;
 	int ret = -1;
+	bridge_hub_t *phub = NULL;
+	carrier_env_t *penv = (carrier_env_t *)arg;
 
-	if(!phub)
+	if(!penv)
 		return -1;
-	curr_ts = time(NULL);
-	if((curr_ts-last_check) < 10)
-		return 0;
-
-	last_check = curr_ts;
-	slog_log(slogd , SL_VERBOSE , "<%s> old attached:%d" , __FUNCTION__ , phub->attached);
+	phub = penv->phub;
+	slog_log(slogd , SL_DEBUG , "<%s> old attached:%d" , __FUNCTION__ , phub->attached);
 
 	/***Get Read Attach*/
 	ret = shmctl(phub->shm_id , IPC_STAT , (struct shmid_ds *)&buff);
@@ -2290,18 +2398,13 @@ static int check_bridge(bridge_hub_t *phub)
 	return 0;
 }
 
-static int check_client_info(carrier_env_t *penv)
+static int check_client_info(void *arg)
 {
-
-	static long last_check = 0;
-	long curr_ts = time(NULL);
+	carrier_env_t *penv = (carrier_env_t *)arg;
 	client_list_t *pclient_list = penv->pclient_list;
 	client_info_t *pclient = NULL;
+	long curr_ts = 0;
 	int slogd = penv->slogd;
-
-	if((curr_ts-last_check) < 5)
-		return 0;
-	last_check = curr_ts;
 
 	/***Check Verify*/
 	if(pclient_list->total_count <= 0)
@@ -2311,13 +2414,17 @@ _try_del_client:
 	pclient = pclient_list->list;
 	while(pclient)
 	{
-		if(!pclient->verify && (curr_ts-pclient->connect_time)>15)
+		if(!pclient->verify)
 		{
-			slog_log(slogd , SL_INFO , "<%s> will close client %d<%s:%d> for not verify from %s" , __FUNCTION__ , pclient->fd , pclient->client_ip , pclient->client_port ,
-					format_time_stamp(pclient->connect_time));
+			curr_ts = time(NULL);
+			if((curr_ts-pclient->connect_time)>10)
+			{
+				slog_log(slogd , SL_INFO , "<%s> will close client %d<%s:%d> for not verify from %s" , __FUNCTION__ , pclient->fd , pclient->client_ip , pclient->client_port ,
+						format_time_stamp(pclient->connect_time));
 
-			free_client_info(pclient);
-			goto _try_del_client;
+				free_client_info(pclient);
+				goto _try_del_client;
+			}
 		}
 		pclient = pclient->next;
 	}
@@ -2325,16 +2432,11 @@ _try_del_client:
 	return 0;
 }
 
-static int check_run_statistics(carrier_env_t *penv)
+static int check_run_statistics(void *arg)
 {
 	msg_event_stat_t stat_event;
-	static long last_check = 0;
-	long curr_ts = time(NULL);
+	carrier_env_t *penv = (carrier_env_t *)arg;
 	int ret = -1;
-
-	if((curr_ts- last_check) < 10)
-		return 0;
-	last_check = curr_ts;
 
 	//event
 	memset(&stat_event , 0 , sizeof(msg_event_stat_t));
@@ -2363,14 +2465,9 @@ static int check_run_statistics(carrier_env_t *penv)
 	return 0;
 }
 
-static int check_signal_stat(carrier_env_t *penv)
+static int check_signal_stat(void *arg)
 {
-	static long last_check = 0;
-	long curr_ts = time(NULL);
-	if((curr_ts - last_check) < 5)
-		return 0;
-
-	last_check = curr_ts;
+	carrier_env_t *penv = (carrier_env_t *)arg;
 	int ret = -1;
 	//check exit
 	if(penv->sig_map.sig_exit)
