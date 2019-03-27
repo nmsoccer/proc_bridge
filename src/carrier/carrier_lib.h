@@ -85,9 +85,11 @@ typedef struct _carrier_msg_t
 #define INNER_PROTO_PONG 2 //pong
 #define INNER_PROTO_VERIFY_REQ 3 //链接验证
 #define INNER_PROTO_VERIFY_RSP  4
-#define INNER_PROTO_SEND_TRAFFIC_REQ 5
-#define INNER_PROTO_SEND_TRAFFIC_RSP 6
-#define INNER_PROTO_MAX 6
+#define INNER_PROTO_TRAFFIC_REQ 5
+#define INNER_PROTO_TRAFFIC_RSP 6
+#define INNER_PROTO_LOG_DEGREE_REQ 7
+#define INNER_PROTO_LOG_DEGREE_RSP 8
+#define INNER_PROTO_MAX 7
 
 typedef struct _inner_proto_t
 {

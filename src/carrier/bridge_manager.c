@@ -28,6 +28,8 @@ extern int errno;
 #define CMD_STR_ANY_ERR "PROB-ANY"
 #define CMD_STR_PING "PING"
 #define CMD_STR_TRAFFIC "ROUTE"
+#define CMD_STR_LOG_DEGREE "SET-LOG-DEGREE"
+#define CMD_STR_LOG_LEVEL "SET-LOG-LEVEL"
 
 /************END**************/
 
@@ -218,6 +220,10 @@ static int show_cmd()
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] show probable sys problems  of <proc_name>[*]\n" , CMD_STR_SYS_ERR);
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] show all probable problems of net or sys of <proc_name>[*]\n" , CMD_STR_ANY_ERR);
 	fprintf(penv->fp_out , "【%s】 <src_proc_name> <dst_proc_name>[*] show bridge route from src to dst* and recv-data if exists\n" , CMD_STR_TRAFFIC);
+	fprintf(penv->fp_out , "【%s】 <proc_name>[*] <degree> reset log-degree of <proc_name>[*]\n  degree: [0]:second(default) "
+			"[1]:milli-sec [2]:micro-sec [3]:nano-sec\n" , CMD_STR_LOG_DEGREE);
+	fprintf(penv->fp_out , "【%s】 <proc_name>[*] <level> reset log-level of <proc_name>[*]\n  level: [0]:info(default) "
+				"[1]:verbose [2]:err [3]:fatal\n" , CMD_STR_LOG_LEVEL);
 	fprintf(penv->fp_out , "【%s】 exit manager tool\n" , CMD_STR_EXIT);
 	fprintf(penv->fp_out , "+--------------------------+\n");
 	return 0;
@@ -291,6 +297,7 @@ static int parent_parse_cmd(char *str_cmd)
 	manager_pipe_pkg_t pipe_pkg;
 	manager_pipe_pkg_t *ppkg = &pipe_pkg;
 	char src[MANAGER_CMD_BUFF_LEN] = {0};
+	char arg[MANAGER_CMD_ARG_LEN] = {0};
 	char *p = NULL;
 
 	/***Arg Check*/
@@ -312,7 +319,7 @@ static int parent_parse_cmd(char *str_cmd)
 		p[0] = 0;
 		p++;
 		strncpy(ppkg->cmd , src , sizeof(ppkg->cmd));
-		strncpy(ppkg->arg , p , sizeof(ppkg->arg));
+		strncpy(arg , p , sizeof(arg));
 	}
 
 	/***Parse Cmd*/
@@ -322,27 +329,28 @@ static int parent_parse_cmd(char *str_cmd)
 		//PING
 		if(strcmp(ppkg->cmd , CMD_STR_PING) == 0)
 		{
-			strip_extra_space(ppkg->arg);
-			if(strchr(ppkg->arg , ' '))
+			strip_extra_space(arg);
+			if(strchr(arg , ' '))
 			{
 				fprintf(penv->fp_out , "Error:cmd 【%s】 only accept one arg!\n" , ppkg->cmd);
 				return -1;
 			}
 				//check arg
-			if(strlen(ppkg->arg) <= 0)
+			if(strlen(arg) <= 0)
 			{
 				fprintf(penv->fp_out , "Error:cmd 【%s】 needs a arg of <proc_name>\n" , ppkg->cmd);
 				return -1;
 			}
 
+			strncpy(ppkg->arg1 , arg , sizeof(ppkg->arg1));
 			break;
 		}
 
 		//TRAFFIC
 		if(strcmp(ppkg->cmd , CMD_STR_TRAFFIC) == 0)
 		{
-			strip_extra_space(ppkg->arg);
-			p = strchr(ppkg->arg , ' ');
+			strip_extra_space(arg);
+			p = strchr(arg , ' ');
 			if(!p)
 			{
 				fprintf(penv->fp_out , "Error:cmd 【%s】 needs two args!\n" , ppkg->cmd);
@@ -356,29 +364,61 @@ static int parent_parse_cmd(char *str_cmd)
 				return -1;
 			}
 
+			strncpy(ppkg->arg1 , arg , sizeof(ppkg->arg1));
 			break;
 		}
+
+		//LOG
+		if(strcmp(ppkg->cmd , CMD_STR_LOG_DEGREE)==0 ||strcmp(ppkg->cmd , CMD_STR_LOG_LEVEL)==0)
+		{
+			strip_extra_space(arg);
+			//arg1
+			p = strchr(arg , ' ');
+			if(!p)
+			{
+				fprintf(penv->fp_out , "Error:cmd 【%s】 needs two args!\n" , ppkg->cmd);
+				return -1;
+			}
+			p[0] = 0;
+			strncpy(ppkg->arg1 , arg , sizeof(ppkg->arg1));
+			//arg2
+			p++;
+			if(strchr(p , ' '))
+			{
+				fprintf(penv->fp_out , "Error:cmd 【%s】 only needs two args!\n" , ppkg->cmd);
+				return -1;
+			}
+			//check arg
+			if(atoi(p)<0 || atoi(p)>3)
+			{
+				fprintf(penv->fp_out , "Error:cmd 【%s】 arg2 only accept 0-3!\n" , ppkg->cmd);
+				return -1;
+			}
+			strncpy(ppkg->arg2 , p , sizeof(ppkg->arg2));
+			break;
+		}
+
 
 		//STAT,SHOW-ERR
 		if(strcmp(ppkg->cmd , CMD_STR_STAT) == 0 || strcmp(ppkg->cmd , CMD_STR_ANY_ERR)==0 ||
 			strcmp(ppkg->cmd , CMD_STR_CONN_ERR)==0 || strcmp(ppkg->cmd , CMD_STR_SYS_ERR)==0)
 		{
-			strip_extra_space(ppkg->arg);
+			strip_extra_space(arg);
 			//printf("cmd:%s arg:%s\n" , ppkg->cmd  , ppkg->arg);
 				//check multi arg
-			if(strchr(ppkg->arg , ' '))
+			if(strchr(arg , ' '))
 			{
 				fprintf(penv->fp_out , "Error:cmd 【%s】 only accept one arg!\n" , ppkg->cmd);
 				return -1;
 			}
 				//check arg
-			if(strlen(ppkg->arg) <= 0)
+			if(strlen(arg) <= 0)
 			{
 				fprintf(penv->fp_out , "Error:cmd 【%s】 needs a arg like <proc_name>*\n" , ppkg->cmd);
 				return -1;
 			}
 
-				//post to child
+			strncpy(ppkg->arg1 , arg , sizeof(ppkg->arg1));
 			break;
 		}
 
@@ -508,7 +548,7 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 	manager_cmd_req_t cmd_req;
 	int ret = -1;
 
-	slog_log(penv->slogd , SL_INFO , "[%s %s]" , ppkg->cmd , ppkg->arg);
+	slog_log(penv->slogd , SL_INFO , "[%s %s %s]" , ppkg->cmd , ppkg->arg1 , ppkg->arg2);
 	/***Handle Cmd*/
 	do
 	{
@@ -518,7 +558,7 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 			memset(&cmd_req , 0 , sizeof(cmd_req));
 			cmd_req.type = MANAGER_CMD_PROTO;
 			cmd_req.data.stat.type = CMD_PROTO_T_PING;
-			strncpy(cmd_req.data.proto.arg , ppkg->arg , MANAGER_CMD_ARG_LEN);
+			strncpy(cmd_req.data.proto.arg1 , ppkg->arg1 , sizeof(cmd_req.data.proto.arg1));
 			break;
 		}
 
@@ -528,9 +568,32 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 			memset(&cmd_req , 0 , sizeof(cmd_req));
 			cmd_req.type = MANAGER_CMD_PROTO;
 			cmd_req.data.stat.type = CMD_PROTO_T_TRAFFIC;
-			strncpy(cmd_req.data.proto.arg , ppkg->arg , MANAGER_CMD_ARG_LEN);
+			strncpy(cmd_req.data.proto.arg1 , ppkg->arg1 , sizeof(cmd_req.data.proto.arg1));
 			break;
 		}
+
+		//LOG-DEGREE
+		if(strcmp(ppkg->cmd , CMD_STR_LOG_DEGREE)==0)
+		{
+			memset(&cmd_req , 0 , sizeof(cmd_req));
+			cmd_req.type = MANAGER_CMD_PROTO;
+			cmd_req.data.stat.type = CMD_PROTO_T_LOG_DEGREE;
+			strncpy(cmd_req.data.proto.arg1 , ppkg->arg1 , sizeof(cmd_req.data.proto.arg1));
+			strncpy(cmd_req.data.proto.arg2 , ppkg->arg2 , sizeof(cmd_req.data.proto.arg2));
+			break;
+		}
+
+		//LOG-LEVEL
+		if(strcmp(ppkg->cmd , CMD_STR_LOG_LEVEL)==0)
+		{
+			memset(&cmd_req , 0 , sizeof(cmd_req));
+			cmd_req.type = MANAGER_CMD_PROTO;
+			cmd_req.data.stat.type = CMD_PROTO_T_LOG_LEVEL;
+			strncpy(cmd_req.data.proto.arg1 , ppkg->arg1 , sizeof(cmd_req.data.proto.arg1));
+			strncpy(cmd_req.data.proto.arg2 , ppkg->arg2 , sizeof(cmd_req.data.proto.arg2));
+			break;
+		}
+
 
 		//STAT
 		if(strcmp(ppkg->cmd , CMD_STR_STAT) == 0)
@@ -539,7 +602,7 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 			cmd_req.type = MANAGER_CMD_STAT;
 			cmd_req.data.stat.type = CMD_STAT_T_PART;
 			strncpy(cmd_req.data.stat.cmd , ppkg->cmd , MANAGER_CMD_NAME_LEN);
-			strncpy(cmd_req.data.stat.arg , ppkg->arg , MANAGER_CMD_ARG_LEN);
+			strncpy(cmd_req.data.stat.arg , ppkg->arg1 , MANAGER_CMD_ARG_LEN);
 			break;
 		}
 
@@ -560,7 +623,7 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 			cmd_req.type = MANAGER_CMD_ERR;
 			cmd_req.data.err.type = CMD_ERR_T_CONN;
 			strncpy(cmd_req.data.err.cmd , ppkg->cmd , MANAGER_CMD_NAME_LEN);
-			strncpy(cmd_req.data.err.arg , ppkg->arg , MANAGER_CMD_ARG_LEN);
+			strncpy(cmd_req.data.err.arg , ppkg->arg1 , MANAGER_CMD_ARG_LEN);
 			break;
 		}
 
@@ -571,7 +634,7 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 			cmd_req.type = MANAGER_CMD_ERR;
 			cmd_req.data.err.type = CMD_ERR_T_SYS;
 			strncpy(cmd_req.data.err.cmd , ppkg->cmd , MANAGER_CMD_NAME_LEN);
-			strncpy(cmd_req.data.err.arg , ppkg->arg , MANAGER_CMD_ARG_LEN);
+			strncpy(cmd_req.data.err.arg , ppkg->arg1 , MANAGER_CMD_ARG_LEN);
 			break;
 		}
 
@@ -582,7 +645,7 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 			cmd_req.type = MANAGER_CMD_ERR;
 			cmd_req.data.err.type = CMD_ERR_T_ALL;
 			strncpy(cmd_req.data.err.cmd , ppkg->cmd , MANAGER_CMD_NAME_LEN);
-			strncpy(cmd_req.data.err.arg , ppkg->arg , MANAGER_CMD_ARG_LEN);
+			strncpy(cmd_req.data.err.arg , ppkg->arg1 , MANAGER_CMD_ARG_LEN);
 			break;
 		}
 
@@ -739,6 +802,9 @@ static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 	case CMD_PROTO_T_TRAFFIC:
 		strncpy(cmd , CMD_STR_TRAFFIC , sizeof(cmd));
 		break;
+	case CMD_PROTO_T_LOG_DEGREE:
+		strncpy(cmd , CMD_STR_LOG_DEGREE , sizeof(cmd));
+		break;
 	default:
 		strncpy(cmd , "???" , sizeof(cmd));
 		break;
@@ -746,7 +812,7 @@ static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 
 	/***Print Head*/
 	fprintf(penv->fp_out , "==========================\n");
-	fprintf(penv->fp_out , "【%s %s】\n" , cmd , psub->arg);
+	fprintf(penv->fp_out , "【%s %s %s】\n" , cmd , psub->arg1 , psub->arg2);
 	fprintf(penv->fp_out , "==========================\n");
 
 	/***Print Manager Stat*/
@@ -762,7 +828,7 @@ static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 		if(psub->result == -1)
 			fprintf(penv->fp_out , "No Result Found!  Please check!\n");
 		if(psub->result == -2)
-			fprintf(penv->fp_out , "Not Connected Yet!  Please check!\n");
+			fprintf(penv->fp_out , "Not Connect!  Please check!\n");
 		return -1;
 	}
 
@@ -796,6 +862,7 @@ static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 		}
 		break;
 	default:
+		fprintf(penv->fp_out , "OK\n");
 		break;
 	}
 

@@ -129,7 +129,7 @@ int iter_time_ticker(carrier_env_t *penv)
 	}
 
 	ptick_list->latest_expire_ms = new_latest_expire;
-	slog_log(slogd , SL_DEBUG , "<%s> finish! ticker count:%d new_latest:%lld" , __FUNCTION__ , ptick_list->count , ptick_list->latest_expire_ms);
+	slog_log(slogd , SL_VERBOSE , "<%s> finish! ticker count:%d new_latest:%lld" , __FUNCTION__ , ptick_list->count , ptick_list->latest_expire_ms);
 	return (get_curr_ms() - curr_ms);
 }
 

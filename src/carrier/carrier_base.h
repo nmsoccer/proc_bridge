@@ -146,31 +146,6 @@ typedef struct _target_
 
 
 /*
- * client_info
- */
-typedef struct _client_info
-{
-	int fd; //sock fd
-	char *buff;
-	int tail;
-	char main_buff[BRIDGE_PACK_LEN];
-	char back_buff[BRIDGE_PACK_LEN];
-	char client_ip[64];
-	unsigned short client_port;
-	long connect_time;	//建立链接的时间
-	char verify;	//是否经过验证
-	int proc_id;	//set after verify
-	char proc_name[PROC_ENTRY_NAME_LEN]; //set after verify
-	conn_traffic_t traffic;
-	struct _client_info *next;
-}client_info_t;
-typedef struct _client_list
-{
-	int total_count;
-	client_info_t *list;
-}client_list_t;
-
-/*
  * manager_info
  */
 #define MANAGER_MSG_LOG "msg.log"
@@ -244,6 +219,32 @@ typedef struct _manager_info_t
 	manage_item_t *item_list;
 
 }manager_info_t;
+
+/*
+ * client_info
+ */
+typedef struct _client_info
+{
+	int fd; //sock fd
+	char *buff;
+	int tail;
+	char main_buff[BRIDGE_PACK_LEN];
+	char back_buff[BRIDGE_PACK_LEN];
+	char client_ip[64];
+	unsigned short client_port;
+	long connect_time;	//建立链接的时间
+	char verify;	//是否经过验证
+	int proc_id;	//set after verify
+	char proc_name[PROC_ENTRY_NAME_LEN]; //set after verify
+	conn_traffic_t traffic;
+	struct _client_info *next;
+}client_info_t;
+typedef struct _client_list
+{
+	int total_count;
+	client_info_t *list;
+}client_list_t;
+
 
 /*
  * carrier_env

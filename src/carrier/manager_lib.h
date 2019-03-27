@@ -11,6 +11,7 @@
 #include "proc_bridge_base.h"
 #include "carrier_lib.h"
 
+
 #define MANAGER_STAT_MAX_ITEM 10
 
 /*
@@ -19,7 +20,9 @@
 typedef struct _manager_pipe_pkg_t
 {
 	char cmd[MANAGER_CMD_NAME_LEN];
-	char arg[MANAGER_CMD_ARG_LEN];
+	//char arg[MANAGER_CMD_ARG_LEN];
+	char arg1[PROC_ENTRY_NAME_LEN];
+	char arg2[PROC_ENTRY_NAME_LEN];
 }manager_pipe_pkg_t;
 
 
@@ -41,6 +44,8 @@ typedef struct _manager_pipe_pkg_t
 
 #define CMD_PROTO_T_PING 1 //ping
 #define CMD_PROTO_T_TRAFFIC 2 //conn-traffic
+#define CMD_PROTO_T_LOG_DEGREE 3 //log-degree
+#define CMD_PROTO_T_LOG_LEVEL 4 //log-level
 
 	//STAT
 typedef struct _cmd_stat_req_t
@@ -82,13 +87,17 @@ typedef struct _cmd_proto_req_t
 {
 	short type;
 	char value;
-	char arg[MANAGER_CMD_ARG_LEN];
+	//char arg[MANAGER_CMD_ARG_LEN];
+	char arg1[PROC_ENTRY_NAME_LEN];
+	char arg2[PROC_ENTRY_NAME_LEN];
 }cmd_proto_req_t;
 typedef struct _cmd_proto_rsp_t
 {
 	short type;
 	char result;
-	char arg[MANAGER_CMD_ARG_LEN];
+	//char arg[MANAGER_CMD_ARG_LEN];
+	char arg1[PROC_ENTRY_NAME_LEN];
+	char arg2[PROC_ENTRY_NAME_LEN];
 	traffic_list_t traffic_list;
 }cmd_proto_rsp_t;
 
