@@ -11,6 +11,7 @@ function install()
   #compiling carrier 
   echo "compiling carrier..."
   cd ${CARRIER_DIR}
+  chmod u+x ./make.sh
   ./make.sh clean 
   ./make.sh make  
   
