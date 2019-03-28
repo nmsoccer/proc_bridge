@@ -28,8 +28,8 @@ extern int errno;
 #define CMD_STR_ANY_ERR "PROB-ANY"
 #define CMD_STR_PING "PING"
 #define CMD_STR_TRAFFIC "ROUTE"
-#define CMD_STR_LOG_DEGREE "SET-LOG-DEGREE"
-#define CMD_STR_LOG_LEVEL "SET-LOG-LEVEL"
+#define CMD_STR_LOG_DEGREE "LOG-DEGREE"
+#define CMD_STR_LOG_LEVEL "LOG-LEVEL"
 
 /************END**************/
 
@@ -223,7 +223,7 @@ static int show_cmd()
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] <degree> reset log-degree of <proc_name>[*]\n  degree: [0]:second(default) "
 			"[1]:milli-sec [2]:micro-sec [3]:nano-sec\n" , CMD_STR_LOG_DEGREE);
 	fprintf(penv->fp_out , "【%s】 <proc_name>[*] <level> reset log-level of <proc_name>[*]\n  level: [0]:info(default) "
-				"[1]:verbose [2]:err [3]:fatal\n" , CMD_STR_LOG_LEVEL);
+				"[1]:verbose [2]:debug [3]:err\n" , CMD_STR_LOG_LEVEL);
 	fprintf(penv->fp_out , "【%s】 exit manager tool\n" , CMD_STR_EXIT);
 	fprintf(penv->fp_out , "+--------------------------+\n");
 	return 0;
@@ -356,15 +356,15 @@ static int parent_parse_cmd(char *str_cmd)
 				fprintf(penv->fp_out , "Error:cmd 【%s】 needs two args!\n" , ppkg->cmd);
 				return -1;
 			}
+			p[0] = 0;
+			strncpy(ppkg->arg1 , arg , sizeof(ppkg->arg1));
 			p++;
-			p = strchr(p , ' ');
-			if(p)
+			if(strchr(p , ' '))
 			{
 				fprintf(penv->fp_out , "Error:cmd 【%s】 only needs two args!\n" , ppkg->cmd);
 				return -1;
 			}
-
-			strncpy(ppkg->arg1 , arg , sizeof(ppkg->arg1));
+			strncpy(ppkg->arg2 , p , sizeof(ppkg->arg2));
 			break;
 		}
 
@@ -569,6 +569,7 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 			cmd_req.type = MANAGER_CMD_PROTO;
 			cmd_req.data.stat.type = CMD_PROTO_T_TRAFFIC;
 			strncpy(cmd_req.data.proto.arg1 , ppkg->arg1 , sizeof(cmd_req.data.proto.arg1));
+			strncpy(cmd_req.data.proto.arg2 , ppkg->arg2 , sizeof(cmd_req.data.proto.arg2));
 			break;
 		}
 
@@ -582,6 +583,18 @@ static int child_parse_cmd(manager_pipe_pkg_t *ppkg)
 			strncpy(cmd_req.data.proto.arg2 , ppkg->arg2 , sizeof(cmd_req.data.proto.arg2));
 			break;
 		}
+
+		//LOG-LEVEL
+		if(strcmp(ppkg->cmd , CMD_STR_LOG_LEVEL)==0)
+		{
+			memset(&cmd_req , 0 , sizeof(cmd_req));
+			cmd_req.type = MANAGER_CMD_PROTO;
+			cmd_req.data.stat.type = CMD_PROTO_T_LOG_LEVEL;
+			strncpy(cmd_req.data.proto.arg1 , ppkg->arg1 , sizeof(cmd_req.data.proto.arg1));
+			strncpy(cmd_req.data.proto.arg2 , ppkg->arg2 , sizeof(cmd_req.data.proto.arg2));
+			break;
+		}
+
 
 		//LOG-LEVEL
 		if(strcmp(ppkg->cmd , CMD_STR_LOG_LEVEL)==0)
@@ -804,6 +817,9 @@ static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 		break;
 	case CMD_PROTO_T_LOG_DEGREE:
 		strncpy(cmd , CMD_STR_LOG_DEGREE , sizeof(cmd));
+		break;
+	case CMD_PROTO_T_LOG_LEVEL:
+		strncpy(cmd , CMD_STR_LOG_LEVEL , sizeof(cmd));
 		break;
 	default:
 		strncpy(cmd , "???" , sizeof(cmd));

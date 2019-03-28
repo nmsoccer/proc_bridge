@@ -89,7 +89,9 @@ typedef struct _carrier_msg_t
 #define INNER_PROTO_TRAFFIC_RSP 6
 #define INNER_PROTO_LOG_DEGREE_REQ 7
 #define INNER_PROTO_LOG_DEGREE_RSP 8
-#define INNER_PROTO_MAX 7
+#define INNER_PROTO_LOG_LEVEL_REQ 9
+#define INNER_PROTO_LOG_LEVEL_RSP 10
+#define INNER_PROTO_MAX 10
 
 typedef struct _inner_proto_t
 {
