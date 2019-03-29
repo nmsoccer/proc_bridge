@@ -4,7 +4,7 @@ LIB_DIR=/usr/local/lib/
 WORK_DIR=`pwd`
 SRC_FILE="proc_bridge.c"
 DYN_FILE="libproc_bridge.so"
-LIB_FILE="libproc_bridge.ar"
+LIB_FILE="libproc_bridge.a"
 
 function main()
 {
@@ -17,12 +17,12 @@ function main()
   fi
 
   #compile library
-  gcc -g -Wall -fPIC --shared ${SRC_FILE} -o ${DYN_FILE}
+  #gcc -g -Wall -fPIC --shared ${SRC_FILE} -o ${DYN_FILE}
 
   gcc -g -Wall -c ${SRC_FILE}
   ar rcvs ${LIB_FILE} *.o
 
-  if [[ ! -e ${DYN_FILE} || ! -e ${LIB_FILE} ]]
+  if [[ ! -e ${LIB_FILE} ]]
   then
     echo "genrating library failed!"
     return
@@ -35,19 +35,20 @@ function main()
     echo "install header files failed!"
   fi 
   
-  cp -f ${DYN_FILE} ${LIB_FILE} ${LIB_DIR}
+  #cp -f ${DYN_FILE} ${LIB_FILE} ${LIB_DIR}
+  cp -f ${LIB_FILE} ${LIB_DIR}
   if [[ $? -ne 0 ]]
   then
     echo "install library failed!"
   fi
 
   #ln
-  cd ${LIB_DIR}
-  ln -s ${DYN_FILE} ${DYN_FILE}.0.1
+  #cd ${LIB_DIR}
+  #ln -s ${DYN_FILE} ${DYN_FILE}.0.1
 
   #clear
   cd ${WORK_DIR}
-  rm ${DYN_FILE} ${LIB_FILE} *.o
+  rm ${LIB_FILE} *.o
 
   #finish
   echo "install library sucess!"

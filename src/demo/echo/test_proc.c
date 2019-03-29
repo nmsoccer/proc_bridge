@@ -1,4 +1,4 @@
-﻿/*
+/*
  * test_proc.c
  *
  *  Created on: 2013-12-25
@@ -122,7 +122,7 @@ int main(int argc , char **argv)
 
 			sleep(1); //wait for msg arrived
 			/*read*/
-			ret = recv_from_bridge(bd , recv_buff , sizeof(recv_buff));
+			ret = recv_from_bridge(bd , recv_buff , sizeof(recv_buff) , -1);
 			if(ret < 0)
 			{
 				fprintf(stdout , "[client]recv from bridge failed! ret:%d\n" , ret);
@@ -141,7 +141,7 @@ int main(int argc , char **argv)
 			memset(recv_buff , 0 , sizeof(recv_buff));
 			memset(send_buff , 0 , sizeof(send_buff));
 			/*read*/
-			ret = recv_from_bridge(bd , recv_buff , sizeof(recv_buff));
+			ret = recv_from_bridge(bd , recv_buff , sizeof(recv_buff) , -1);
 			if(ret < 0)
 			{
 				//fprintf(stdout , "recv from bridge failed! ret:%d\n" , ret);

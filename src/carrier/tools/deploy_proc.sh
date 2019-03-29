@@ -6,6 +6,7 @@ WORK_DIR=`pwd`
 BACK_UP_DIR="./backup"
 
 #REMOTE SETTING
+EXPECT_PREFIX="expect "
 REMOTE_PASS=""
 EXE_CMD="./exe_cmd.exp"
 SCP_CMD="./scp.exp"
@@ -85,8 +86,7 @@ function deploy()
   then
     mkdir -p ${target_dir}
   else
-    echo "ha?"
-    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "mkdir -p ${target_dir}"
+    ${EXPECT_PREFIX} ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "mkdir -p ${target_dir}"
   fi
   if [[ $? -ne 0 ]]
   then
@@ -113,9 +113,8 @@ function deploy()
     cp -f ${tar_file} ${target_dir}/
     cp -f ${md5file}  ${target_dir}/
   else
-    echo "ha?"
-    ${SCP_CMD} ${ip} ${usr} ${REMOTE_PASS} ${tar_file} ${target_dir}/
-    ${SCP_CMD} ${ip} ${usr} ${REMOTE_PASS} ${md5file} ${target_dir}/
+    ${EXPECT_PREFIX} ${SCP_CMD} ${ip} ${usr} ${REMOTE_PASS} ${tar_file} ${target_dir}/
+    ${EXPECT_PREFIX} ${SCP_CMD} ${ip} ${usr} ${REMOTE_PASS} ${md5file} ${target_dir}/
   fi
   if [[ $? -ne 0 ]]
   then
@@ -133,7 +132,7 @@ function deploy()
   then
     cd ${target_dir}
   else
-    echo "ha?"
+    :
   fi
 
   #check md5
@@ -147,7 +146,7 @@ function deploy()
       exit 1
     fi
   else
-    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./remote_tool.sh; ./remote_tool.sh 101 ${tar_file} ${md5file}"
+    ${EXPECT_PREFIX} ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./remote_tool.sh; ./remote_tool.sh 101 ${tar_file} ${md5file}"
   fi
 
   
@@ -157,8 +156,7 @@ function deploy()
     tar -zxvf ${tar_file} 1>/dev/null 2>&1 
     cp ${cfg_path} .
   else
-    echo "ha?"
-    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; tar -zxvf ${tar_file} 1>/dev/null 2>&1; cp ${cfg_path} ."
+    ${EXPECT_PREFIX} ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; tar -zxvf ${tar_file} 1>/dev/null 2>&1; cp ${cfg_path} ."
   fi
   echo "unzip ${tar_file} success~"
 
@@ -169,21 +167,20 @@ function deploy()
     cd ${target_dir}
     chmod u+x ./deleter; ./deleter -i ${proc_id} -N ${name_space}
   else
-    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./deleter; ./deleter -i ${proc_id} -N ${name_space}"
+    ${EXPECT_PREFIX} ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./deleter; ./deleter -i ${proc_id} -N ${name_space}"
   fi
 
-  usleep 500000 
+  usleep 300000 
   echo "try to create shm..."
   #create shm
   if [[ ${is_local} -eq 1 ]]
   then
     chmod u+x ./creater;./creater -i ${proc_id} -N ${name_space} -r ${recv_size} -s ${send_size}
   else
-    echo "ha?"
-    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./creater; ./creater -i ${proc_id} -N ${name_space} -r ${recv_size} -s ${send_size}"
+    ${EXPECT_PREFIX} ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./creater; ./creater -i ${proc_id} -N ${name_space} -r ${recv_size} -s ${send_size}"
   fi
 
-  usleep 500000
+  usleep 300000
   echo "try to start carrier..."
   #exe carrier
   if [[ ${is_local} -eq 1 ]]
@@ -192,7 +189,7 @@ function deploy()
     chmod u+x ./carrier; ./carrier -i ${proc_id} -N ${name_space} -p ${port} -n ${proc_name} -S
   else
     echo "name_space:${name_space}"
-    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./carrier; ./carrier -i ${proc_id} -N ${name_space} -p ${port} -n ${proc_name} -S"
+    ${EXPECT_PREFIX} ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./carrier; ./carrier -i ${proc_id} -N ${name_space} -p ${port} -n ${proc_name} -S"
   fi
 
   #finish
@@ -217,7 +214,7 @@ function update_cfg()
   then
     cp -f ${cfg_path} ${target_dir}/
   else
-    ${SCP_CMD} ${ip} ${usr} ${REMOTE_PASS} ${cfg_path} ${target_dir}/
+    ${EXPECT_PREFIX} ${SCP_CMD} ${ip} ${usr} ${REMOTE_PASS} ${cfg_path} ${target_dir}/
   fi
   if [[ $? -ne 0 ]]
   then
@@ -242,19 +239,13 @@ function reload_cfg()
       kill -s SIGUSR1 ${pid} 
     fi
   else
-    echo "ha?"
     target_dir=${dir}/${proc_name}
-    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./remote_tool.sh; ./remote_tool.sh 1 ${name_space} ${proc_name} ${proc_id}"
+    ${EXPECT_PREFIX} ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./remote_tool.sh; ./remote_tool.sh 1 ${name_space} ${proc_name} ${proc_id}"
   fi
 
   echo "reload finish"
 }
 
-
-function deploy_old()
-{
-  echo "deploy old finish"
-}
 
 function shut_carrier()
 {
@@ -263,7 +254,7 @@ function shut_carrier()
   if [[ ${is_local} -ne 1 ]]
   then
     target_dir=${dir}/${proc_name}
-    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./remote_tool.sh; ./remote_tool.sh 2 ${name_space} ${proc_name} ${proc_id}"
+    ${EXPECT_PREFIX} ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./remote_tool.sh; ./remote_tool.sh 2 ${name_space} ${proc_name} ${proc_id}"
     return
   fi
 

@@ -5,7 +5,7 @@ TARGET="tester"
 
 
 #compile
-gcc -g -Wall test_proc.c -lproc_bridge -lslog -lstlv -lm -o ${TARGET}
+gcc -g -Wall test_proc.c -lproc_bridge -lslog -lstlv -lm -lrt -o ${TARGET}
 if [[ $? -ne 0 ]]
 then
   echo "compilng failed! please enter ${LIB_DIR} and exec 'install_lib.sh' to install library first!"
