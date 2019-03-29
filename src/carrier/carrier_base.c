@@ -79,7 +79,7 @@ int iter_time_ticker(carrier_env_t *penv)
 		return 0;
 
 	/***EXE TICKER*/
-	new_latest_expire = 0x7FFFFFFFFFF;
+	new_latest_expire = sizeof(long)==4?0x7FFFFFFF:0x7FFFFFFFFFFLL;
 	pticker = ptick_list->head.next;
 	while(pticker)
 	{

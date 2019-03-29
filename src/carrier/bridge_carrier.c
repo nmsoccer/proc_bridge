@@ -1257,7 +1257,7 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 			if(value_len == 0) //解包失败，
 			{
 				//接收缓冲区不足.不应出现对端发送一个>=max-pkg-size的包 断掉
-				if(info == STLV_UNPACK_FAIL_BUFF_LEN)
+				if(info == STLV_UNPACK_FAIL_BUFF_LEN && (pclient->tail-pos)>=sizeof(pclient->main_buff))
 				{
 					slog_log(slogd , SL_ERR , "<%s> failed! recv buff not enoght?! wtf!! it may be from wrong source! now try to close  connection. %d<%s:%d>" , __FUNCTION__ ,
 													fd , pclient->client_ip , pclient->client_port);

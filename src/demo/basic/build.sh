@@ -1,10 +1,14 @@
 #!/bin/bash
 BIN_FILES=("manager" "creater" "deleter" "carrier")
-TOOL_FILES=("bridge_build.py" "deploy_proc.sh")
+TOOL_FILES=("bridge_build.py" "deploy_proc.sh" "remote_tool.sh" "scp.exp" "exe_cmd.exp")
 CARRIER_DIR="../../carrier"
+TOOL_DIR=${CARRIER_DIR}/tools
+TESTER="tester"
 
 function install()
 {
+  killall ${TESTER} 
+
   echo "try to install..."
   curr_dir=`pwd`
 
@@ -30,7 +34,7 @@ function install()
   #cp
   for file in ${TOOL_FILES[@]}
   do
-   cp ${CARRIER_DIR}/${file} .
+   cp ${TOOL_DIR}/${file} .
    if [[ ! -e ${file} ]]
    then
      echo "${file} not exist!"
@@ -101,7 +105,9 @@ function clean()
     rm -rf "./cfg"
   fi
 
-  #rm ./*.log*
+  rm ./*.log*
+  killall ${TESTER}
+  rm ${TESTER}
 
   echo "========================"
   echo "clear done"

@@ -1,10 +1,14 @@
 #!/bin/bash
 LOCAL_CFG_DIR="./cfg"
 CFG_FILE="carrier.cfg"
-BINARY_FILES=("creater" "deleter" "carrier")
+BINARY_FILES=("creater" "deleter" "carrier" "remote_tool.sh")
 WORK_DIR=`pwd`
 BACK_UP_DIR="./backup"
 
+#REMOTE SETTING
+REMOTE_PASS=""
+EXE_CMD="./exe_cmd.exp"
+SCP_CMD="./scp.exp"
 
 #arg list 
 proc_name=""
@@ -82,6 +86,7 @@ function deploy()
     mkdir -p ${target_dir}
   else
     echo "ha?"
+    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "mkdir -p ${target_dir}"
   fi
   if [[ $? -ne 0 ]]
   then
@@ -109,6 +114,8 @@ function deploy()
     cp -f ${md5file}  ${target_dir}/
   else
     echo "ha?"
+    ${SCP_CMD} ${ip} ${usr} ${REMOTE_PASS} ${tar_file} ${target_dir}/
+    ${SCP_CMD} ${ip} ${usr} ${REMOTE_PASS} ${md5file} ${target_dir}/
   fi
   if [[ $? -ne 0 ]]
   then
@@ -130,29 +137,39 @@ function deploy()
   fi
 
   #check md5
-  md5_a=`md5sum ${tar_file} | awk '{print $1}'`
-  md5_b=`cat ${md5file}`
-  if [[ ${md5_a} != ${md5_b} ]]
+  if [[ ${is_local} -eq 1 ]]
   then
-    echo "${tar_file} not matched!"
-    exit 1
+    md5_a=`md5sum ${tar_file} | awk '{print $1}'`
+    md5_b=`cat ${md5file}`
+    if [[ ${md5_a} != ${md5_b} ]]
+    then
+      echo "${tar_file} not matched!"
+      exit 1
+    fi
+  else
+    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./remote_tool.sh; ./remote_tool.sh 101 ${tar_file} ${md5file}"
   fi
 
   
-  #unzip tar 
-  tar -zxvf ${tar_file} 1>/dev/null 2>&1 
-  cp ${cfg_path} . 
+  #unzip tar
+  if [[ ${is_local} -eq 1 ]]
+  then
+    tar -zxvf ${tar_file} 1>/dev/null 2>&1 
+    cp ${cfg_path} .
+  else
+    echo "ha?"
+    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; tar -zxvf ${tar_file} 1>/dev/null 2>&1; cp ${cfg_path} ."
+  fi
   echo "unzip ${tar_file} success~"
-
 
   echo "try to delete shm..."
   #delete shm
   if [[ ${is_local} -eq 1 ]]
   then
     cd ${target_dir}
-    ./deleter -i ${proc_id} -N ${name_space}
+    chmod u+x ./deleter; ./deleter -i ${proc_id} -N ${name_space}
   else
-    echo "ha?"
+    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./deleter; ./deleter -i ${proc_id} -N ${name_space}"
   fi
 
   usleep 500000 
@@ -160,9 +177,10 @@ function deploy()
   #create shm
   if [[ ${is_local} -eq 1 ]]
   then
-    ./creater -i ${proc_id} -N ${name_space} -r ${recv_size} -s ${send_size}
+    chmod u+x ./creater;./creater -i ${proc_id} -N ${name_space} -r ${recv_size} -s ${send_size}
   else
     echo "ha?"
+    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./creater; ./creater -i ${proc_id} -N ${name_space} -r ${recv_size} -s ${send_size}"
   fi
 
   usleep 500000
@@ -171,9 +189,10 @@ function deploy()
   if [[ ${is_local} -eq 1 ]]
   then
     echo "name_space:${name_space}"
-    ./carrier -i ${proc_id} -N ${name_space} -p ${port} -n ${proc_name} -S
+    chmod u+x ./carrier; ./carrier -i ${proc_id} -N ${name_space} -p ${port} -n ${proc_name} -S
   else
-    echo "ha?"
+    echo "name_space:${name_space}"
+    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./carrier; ./carrier -i ${proc_id} -N ${name_space} -p ${port} -n ${proc_name} -S"
   fi
 
   #finish
@@ -198,13 +217,13 @@ function update_cfg()
   then
     cp -f ${cfg_path} ${target_dir}/
   else
-    echo "ha?"
+    ${SCP_CMD} ${ip} ${usr} ${REMOTE_PASS} ${cfg_path} ${target_dir}/
   fi
   if [[ $? -ne 0 ]]
   then
     exit 1
   fi
-  echo "copy ${cfg_path} to ${target_dir} success!"
+  echo "copy ${cfg_path} to ${usr}@${ip}:${target_dir} success!"
 }
 
 function reload_cfg()
@@ -224,6 +243,8 @@ function reload_cfg()
     fi
   else
     echo "ha?"
+    target_dir=${dir}/${proc_name}
+    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./remote_tool.sh; ./remote_tool.sh 1 ${name_space} ${proc_name} ${proc_id}"
   fi
 
   echo "reload finish"
@@ -232,108 +253,21 @@ function reload_cfg()
 
 function deploy_old()
 {
-  if [[ $# -lt 6 ]]
-  then
-    show_help
-    exit 1
-  fi 
-
-  echo "try to deploy $proc_name to $usr@$ip[$port]:$dir"
-
-  #check cfg file
-  cfg_path="${LOCAL_CFG_DIR}/${proc_name}/${CFG_FILE}"  
-  if [[ ! -e ${cfg_path} ]]
-  then
-    echo "cfg file:${cfg_path} not found!"
-    exit 1
-  fi
-
-  #check binary file
-  for file in ${BINARY_FILES[@]}
-  do
-    if [[ ! -e ${file} ]]
-    then
-      echo "${file} not exist!"
-      exit 1
-    fi
-  done 
-
-  #create target dir
-  target_dir=${dir}/${proc_name}
-  if [[ ${is_local} -eq 1 ]]
-  then
-    mkdir -p ${target_dir}
-  else
-    echo "ha?"
-  fi
-  if [[ $? -ne 0 ]]
-  then
-    exit 1
-  fi
-  
-  #copy cfg file
-  if [[ ${is_local} -eq 1 ]]
-  then
-    cp -f ${cfg_path} ${target_dir}/
-  else
-    echo "ha?"
-  fi
-  if [[ $? -ne 0 ]]
-  then
-    exit 1
-  fi
-  echo "copy ${cfg_path} to ${target_dir} success!"
-
-  #copy binary file
-  for file in ${BINARY_FILES[@]}
-  do
-    if [[ ${is_local} -eq 1 ]]
-    then
-      cp ${file} ${target_dir}
-      if [[ $? -ne 0 ]]
-      then
-        exit 1
-      fi
-    else
-     echo "ha?"
-    fi
-  done
-  echo "copy binary files to ${target_dir} success!"
-
-  echo "try to delete shm..."
-  #delete shm
-  if [[ ${is_local} -eq 1 ]]
-  then
-    cd ${target_dir}
-    ./deleter -i ${proc_id}
-  else
-    echo "ha?"
-  fi
-
-  sleep 1
-  echo "try to create shm..."
-  #create shm
-  if [[ ${is_local} -eq 1 ]]
-  then
-    ./creater -i ${proc_id}
-  else
-    echo "ha?"
-  fi
-
-  #exe carrier
-  if [[ ${is_local} -eq 1 ]]
-  then
-    ./carrier -i ${proc_id} -n ${port} -S
-  else
-    echo "ha?"
-  fi
-
-  #finish
-  echo "deploy finish"
+  echo "deploy old finish"
 }
 
 function shut_carrier()
 {
+  echo "try to shutdown carrier ${proc_name}[${name_space}:${proc_id}]<${ip}:${port}>"
+  #remote
+  if [[ ${is_local} -ne 1 ]]
+  then
+    target_dir=${dir}/${proc_name}
+    ${EXE_CMD} ${ip} ${usr} ${REMOTE_PASS} "cd ${target_dir}; chmod u+x ./remote_tool.sh; ./remote_tool.sh 2 ${name_space} ${proc_name} ${proc_id}"
+    return
+  fi
+
+  #local
   pid=`cat "/tmp/.proc_bridge.${name_space}/carrier.${proc_id}.lock"`
   ret=`ps aux | grep carrier | grep ${name_space} | grep "\<${proc_name}\>" | grep ${pid} | grep -v grep | grep -v 'bash'`
   if [[ -z ${ret} ]]
@@ -343,23 +277,13 @@ function shut_carrier()
   fi
 
   #kill proc
-  if [[ ${is_local} -eq 1 ]]
-  then
-    kill -s SIGINT ${pid}
-  else
-    echo "ha?"
-  fi
+  kill -s SIGINT ${pid}
 
   sleep 1
   #rm shm
   target_dir=${dir}/${proc_name}
-  if [[ ${is_local} -eq 1 ]]
-  then
-    cd ${target_dir}
-    ./deleter -i ${proc_id} -N ${name_space}
-  else
-    echo "ha?"
-  fi
+  cd ${target_dir}
+  ./deleter -i ${proc_id} -N ${name_space}
 
 
   #check
@@ -398,7 +322,12 @@ function main()
     #echo "{local handle}"
     is_local=1
   else
-    echo "{remote handle}"
+    echo "remote handle..."
+    if [[ -z ${REMOTE_PASS} ]]
+    then
+      echo "VAR 'REMOTE_PASS' is not set! Please Set it to the passwd of ${usr}@${ip} to sync files"
+      exit 1
+    fi
   fi
 
 
@@ -408,7 +337,6 @@ function main()
     deploy 
   ;;
   1)
-    echo "try to shutdown carrier ${proc_name}[${name_space}:${proc_id}]<${ip}:${port}>"
     shut_carrier
   ;;
   2)

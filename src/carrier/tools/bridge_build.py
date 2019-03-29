@@ -382,8 +382,8 @@ def parse_cfg():
 				#get proc_name
 				pos = line.find(':')
 				if pos <= 0:
-					print("Syntax Error:line:%d While Get proc_name,No ':' in %s " % (line_no , line));
-					return -1				
+					print("Syntax warning:line:%d While Get proc_name,No ':' in %s " % (line_no , line));
+					continue
 				#proc_name = line[0:pos]
 				names = line[0:pos]
 				proc_names = [];
