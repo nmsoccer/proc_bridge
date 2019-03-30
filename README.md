@@ -66,5 +66,229 @@ A distributed inter-proc communication system
 各名词的基本含义如上图所示.
 这里放大了db_server通信节点的构造，并且列出了【namespace】,【proc_id】,【proc_name】,【ip,port】等的作用域。其中【proc_name】也叫db_server，这个是对业务进程 _dbserver_ 的一个显性描述，业务进程可以叫任意名字，这里的【proc_name】只约束到lower层  
 
+
+### 简单演示
+下面通过一个简单的echo实例来演示一下该系统的部署和使用。
+* 依赖环境
+  * 请参考上面的环境依赖一节，下载安装好slog和stlv库。
+  * 请确保构建服务器上已装好python和expect
+  * 下载proc_bridge-master.zip，unzip解压到服务器
+  * 进入proc_bridge-master/src/library
+  * 执行./install_lib.sh安装支持库和头文件到/usr/local/xx 这里可能需要root权限
+  
+* 本地部署  
+首先作最简单的部署，节点均部署到本机。
+  1) 进入proc_bridge-master/src/demo/echo目录
+  2) 直接使用bridge.cfg， (_配置文件详细内容请参考https://github.com/nmsoccer/proc_bridge/wiki/config-detail_)
+```
+[BRIDGE_USER]
+nmsoccer
+[/BRIDGE_USER]
+
+#BRIDGE_DIR
+#部署安装的目录(绝对路径)
+[BRIDGE_DIR]
+/home/nmsoccer/proc_bridge
+[/BRIDGE_DIR]
+
+...
+
+[PROC]
+client = 20000 : 127.0.0.1 : 11070 # default r/s size
+server = 30000 : 127.0.0.1 : 11060 : 50 #send_size:50
+[/PROC]
+
+[CHANNEL]
+client:server #c->s
+server:client #s->c
+[/CHANNEL] 
+```
+  3) 其他不做改动，需要修改[BRIDGE_USER]和[BRIDGE_DIR]为本机服务器相关的用户和安装目录
+  4) 执行脚本./build.sh install(_安装部署脚本详细说明请参阅https://github.com/nmsoccer/proc_bridge/wiki/construct-tool_)
+  5) 正常情况下应安装成功,并出现以下提示:
+  ```
+  ...
+  deploy finish
+  ---------[Complete]------------
+  ========================
+  install complete!
+  you may use './manager -i 1 -N <name_space>' to start manager to check info.
+  you may use './bridge_build.py xx' to restart/shutdown/reload carrier
+  good luck
+  ========================
+  ```
+  6) 执行./manager -i 1 -N echo打开管理器。执行STAT \* 查看carrier运行状况  
+  (_manager管理端详细说明参考https://github.com/nmsoccer/proc_bridge/wiki/manager_)
+  ```
+==========================
+【STAT *】
+==========================
+----------[1]----------
+<FLAG>               valid
+<UPDATE>             2019-03-30 21:05:49
+<PROC>               client:20000
+<ADDR>               127.0.0.1:11070
+<MY-CONNECT>         connected
+<RUN>
+*started:2019-03-30 21:00:38
+*ERROR:upper process may not run:2019-03-30 21:05:49
+<CONNECT>
+*connect all:2019-03-30 21:05:49
+...
+----------[2]----------
+<FLAG>               valid
+<UPDATE>             2019-03-30 21:05:49
+<PROC>               server:30000
+<ADDR>               127.0.0.1:11060
+<MY-CONNECT>         connected
+<RUN>
+*started:2019-03-30 21:00:41
+*ERROR:upper process may not run:2019-03-30 21:05:49
+<CONNECT>
+*connect all:2019-03-30 21:05:47
+  ```
+  这里说明proc_bridge系统的client和server节点的lower层carrier已经部署成功，只等上层业务进程使用
+  
+  7) 执行./make_test.sh编译一个用于演示的简单上层业务进程
+  ```
+  bash ./make_test.sh 
+=====================================
+make success
+>>exe './tester -i 30000 -t 20000 -N echo -s &'
+>>exe './tester -i 20000 -t 30000 -N echo -c'
+then to test echo...
+=====================================
+  ```
+  
+  8) 本地执行./tester -i 30000 -t 20000 -N echo -s &作为server;./tester -i 20000 -t 30000 -N echo -c作为client
+  ```
+[nmsoccer@AY13122114553417645eZ echo]$ ./tester -i 30000 -t 20000 -N echo -s &
+[1] 18438
+act as a server...
+[nmsoccer@AY13122114553417645eZ echo]$ ./tester -i 20000 -t 30000 -N echo -c
+act as a client...
+CS 
+[server]: CS 
+
+FUDDKKK
+[server]: FUDDKKK
+
+******F****K
+[server]: ******F****K
+  ```
+  9) ./build.sh clear 关停echo并清除文件
+  
+  
+* 异机部署  
+  1) mv bridge.cfg bridge.cfg_bak 将同机部署的配置文件备份
+  2) mv bridge.cfg_diff_server bridge.cfg 使用新的配置文件，变动的内容如下:
+  
+  ```
+[MANAGER_ADDR]
+10.144.172.215:11100;
+[/MANAGER_ADDR]
+
+[PROC]
+client = 20000 : 10.161.37.104 : 11070
+server = 30000 : 10.144.172.215 : 11060 : 50 #send_size:50
+[/PROC]
+
+  ```
+  
+其中client部署到10.161.37.104服务器上，server部署到10.144.172.215
+
+3) 由于该套构建脚本使用expect来同步远程配置及文件，所以需要配置所部署用户在远程服务器端的密码.  在../../carrier/tools/deploy_proc.sh脚本里填入REMOTE_PASS：  
+
+```
+...
+EXPECT_PREFIX="expect "
+REMOTE_PASS="*****" #remote passwd to sync files
+EXE_CMD="./exe_cmd.exp"
+SCP_CMD="./scp.exp"
+...
+
+```
+4）其他不做改动，需要修改[BRIDGE_USER]和[BRIDGE_DIR]为本机服务器相关的用户和安装目录  
+5) 执行脚本./build.sh install(_安装部署脚本详细说明请参阅https://github.com/nmsoccer/proc_bridge/wiki/construct-tool_)
+6) 正常情况下应安装成功,并出现以下提示:
+```
+  deploy finish
+  ========================
+  install complete!
+  you may use './manager -i 1 -N <name_space>' to start manager to check info.
+  you may use './bridge_build.py xx' to restart/shutdown/reload carrier
+  good luck
+  ========================
+```
+7) 执行./manager -i 1 -N echo打开管理器。执行STAT \* 查看carrier运行状况  
+  (_manager管理端详细说明参考https://github.com/nmsoccer/proc_bridge/wiki/manager_)
+  ```
+  ...
+STAT *
+==========================
+【STAT *】
+==========================
+----------[1]----------
+<FLAG>               valid
+<UPDATE>             2019-03-30 21:38:36
+<PROC>               client:20000
+<ADDR>               10.161.37.104:11070
+<MY-CONNECT>         connected
+<RUN>
+*started:2019-03-30 21:36:19
+*ERROR:upper process may not run:2019-03-30 21:38:34
+<CONNECT>
+*connect all:2019-03-30 21:38:36
+ ...
+ ----------[2]----------
+<FLAG>               valid
+<UPDATE>             2019-03-30 21:38:34
+<PROC>               server:30000
+<ADDR>               10.144.172.215:11060
+<MY-CONNECT>         connected
+<RUN>
+*started:2019-03-30 21:36:23
+*ERROR:upper process may not run:2019-03-30 21:38:34
+<CONNECT>
+*connect all:2019-03-30 21:38:34
+ 
+  ```
+以上可以见server节点已经部署到10.144.172.215,而client节点已部署到10.161.37.104
+
+8）执行./make_test.sh编译一个用于演示的简单上层业务进程
+  ```
+bash ./make_test.sh 
+=====================================
+make success
+>>exe './tester -i 30000 -t 20000 -N echo -s &'
+>>exe './tester -i 20000 -t 30000 -N echo -c'
+then to test echo...
+=====================================
+  ```
+9）在10.144.172.215服务器执行./tester -i 30000 -t 20000 -N echo -s &  
+将tester复制到10.161.37.104服务器任意目录，并执行./tester -i 20000 -t 30000 -N echo -c
+```
+[nmsoccerg@AY13122114553417645eZ echo]$ ./tester -i 30000 -t 20000 -N echo -s 
+act as a server...
+...
+[nmsoccer@AY140212101414859034Z ~]$ ./tester -i 20000 -t 30000 -N echo -c
+act as a client...
+hello world!
+[server]: hello world!
+
+new day
+[server]: new day
+
+new night
+[server]: new night
+
+cs and suomei are ****
+[server]: cs and suomei are ****
+
+```
+10) ./build.sh clear 关停echo并清除文件
+
+
+
 # MORE
 更多详细配置和使用说明请查看:https://github.com/nmsoccer/proc_bridge/wiki
