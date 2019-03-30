@@ -206,7 +206,7 @@ SCP_CMD="./scp.exp"
 ...
 
 ```
-4) 其他不做改动，需要修改[BRIDGE_USER]和[BRIDGE_DIR]为本机服务器相关的用户和安装目录  
+4) 其他不做改动，需要修改[BRIDGE_USER]和[BRIDGE_DIR]为所有部署服务器共同使用的用户和安装目录  
 5) 执行脚本./build.sh install(_安装部署脚本详细说明请参阅https://github.com/nmsoccer/proc_bridge/wiki/construct-tool_)
 6) 正常情况下应安装成功,并出现以下提示:  
 ```
