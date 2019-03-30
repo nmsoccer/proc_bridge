@@ -179,9 +179,19 @@ FUDDKKK
   9) ./build.sh clear 关停echo并清除文件
   
   
-#### 异地部署  
+#### 异机部署  
   1) mv bridge.cfg bridge.cfg_bak 将同机部署的配置文件备份
   2) mv bridge.cfg_diff_server bridge.cfg 使用新的配置文件，变动的内容如下:
+  ```
+[MANAGER_ADDR]
+10.144.172.215:11100;
+[/MANAGER_ADDR]
+
+[PROC]
+client = 20000 : 10.161.37.104 : 11070
+server = 30000 : 10.144.172.215 : 11060 : 50 
+[/PROC]
+  ```
   
 其中client部署到10.161.37.104服务器上，server部署到10.144.172.215
 
@@ -196,9 +206,9 @@ SCP_CMD="./scp.exp"
 ...
 
 ```
-4）其他不做改动，需要修改[BRIDGE_USER]和[BRIDGE_DIR]为本机服务器相关的用户和安装目录  
+4) 其他不做改动，需要修改[BRIDGE_USER]和[BRIDGE_DIR]为本机服务器相关的用户和安装目录  
 5) 执行脚本./build.sh install(_安装部署脚本详细说明请参阅https://github.com/nmsoccer/proc_bridge/wiki/construct-tool_)
-6) 正常情况下应安装成功,并出现以下提示:
+6) 正常情况下应安装成功,并出现以下提示:  
 ```
   deploy finish
   ========================
@@ -243,7 +253,7 @@ STAT *
   ```
 以上可以见server节点已经部署到10.144.172.215,而client节点已部署到10.161.37.104
 
-8）执行./make_test.sh编译一个用于演示的简单上层业务进程
+8) 执行./make_test.sh编译一个用于演示的简单上层业务进程
   ```
 bash ./make_test.sh 
 =====================================
@@ -253,7 +263,7 @@ make success
 then to test echo...
 =====================================
   ```
-9）在10.144.172.215服务器执行./tester -i 30000 -t 20000 -N echo -s &  
+9) 在10.144.172.215服务器执行./tester -i 30000 -t 20000 -N echo -s   
 将tester复制到10.161.37.104服务器任意目录，并执行./tester -i 20000 -t 30000 -N echo -c
 ```
 [nmsoccerg@AY13122114553417645eZ echo]$ ./tester -i 30000 -t 20000 -N echo -s 
