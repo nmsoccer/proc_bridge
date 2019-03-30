@@ -67,7 +67,7 @@ int iter_time_ticker(carrier_env_t *penv)
 	tick_list_t *ptick_list = NULL;
 	time_ticker_t *pticker = NULL;
 	time_ticker_t *ptmp = NULL;
-	long curr_ms = get_curr_ms();
+	long long curr_ms = get_curr_ms();
 	long long new_latest_expire = 0;
 	int slogd = -1;
 
@@ -79,7 +79,7 @@ int iter_time_ticker(carrier_env_t *penv)
 		return 0;
 
 	/***EXE TICKER*/
-	new_latest_expire = sizeof(long)==4?0x7FFFFFFF:0x7FFFFFFFFFFLL;
+	new_latest_expire = 0x7FFFFFFFFFFLL;
 	pticker = ptick_list->head.next;
 	while(pticker)
 	{
@@ -135,12 +135,12 @@ int iter_time_ticker(carrier_env_t *penv)
 
 
 //get curr ms
-long get_curr_ms()
+long long get_curr_ms()
 {
 	int ret = -1;
 	struct timeval tv;
 	ret = gettimeofday(&tv , NULL);
 	if(ret < 0)
 		return -1;
-	return tv.tv_sec*1000+tv.tv_usec/1000;
+	return ((long long)tv.tv_sec*1000)+tv.tv_usec/1000;
 }

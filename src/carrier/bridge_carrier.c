@@ -125,8 +125,8 @@ int main(int argc , char **argv)
 	int cost_ms = 0;
 	int reward_ms = 0;
 	int total_cost = 0;
-	long start_ms = 0;
-	long end_ms = 0;
+	long long start_ms = 0;
+	long long end_ms = 0;
 
 	/***Open Log*/
 	memset(&slog_option , 0 , sizeof(slog_option));
@@ -932,9 +932,9 @@ static int dispatch_bridge(int reward_ms)
 	int ret = 0;
 	bridge_info_t *pbridge_info = &penv->bridge_info;
 	long curr_ts = 0;
-	long enter_ms = get_curr_ms();
-	long curr_ms = 0;
-	long end_ms = 0;
+	long long enter_ms = get_curr_ms();
+	long long curr_ms = 0;
+	long long end_ms = 0;
 
 	while(1)
 	{

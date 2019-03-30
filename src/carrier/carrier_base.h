@@ -277,7 +277,7 @@ typedef struct _carrier_env_t
 
 /*****FUNC********/
 //get curr ms
-extern long get_curr_ms();
+extern long long get_curr_ms();
 
 //添加一个ticker
 extern int append_carrier_ticker(carrier_env_t *penv , CARRIER_TICK func_tick , char type , long long tick_period ,
