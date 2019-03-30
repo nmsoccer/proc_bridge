@@ -280,8 +280,8 @@ new day
 new night
 [server]: new night
 
-cs and suomei are ****
-[server]: cs and suomei are ****
+cs and suomei are dog-man and woman
+[server]: cs and suomei are dog-man and woman
 
 ```
 10) ./build.sh clear 关停echo并清除文件
