@@ -69,14 +69,14 @@ A distributed inter-proc communication system
 
 ### 简单演示
 下面通过一个简单的echo实例来演示一下该系统的部署和使用。
-* 依赖环境
+#### 依赖环境
   * 请参考上面的环境依赖一节，下载安装好slog和stlv库。
   * 请确保构建服务器上已装好python和expect
   * 下载proc_bridge-master.zip，unzip解压到服务器
   * 进入proc_bridge-master/src/library
   * 执行./install_lib.sh安装支持库和头文件到/usr/local/xx 这里可能需要root权限
   
-* 本地部署  
+#### 本地部署  
 首先作最简单的部署，节点均部署到本机。
   1) 进入proc_bridge-master/src/demo/echo目录
   2) 直接使用bridge.cfg， (_配置文件详细内容请参考https://github.com/nmsoccer/proc_bridge/wiki/config-detail_)
@@ -179,21 +179,9 @@ FUDDKKK
   9) ./build.sh clear 关停echo并清除文件
   
   
-* 异机部署  
+#### 异地部署  
   1) mv bridge.cfg bridge.cfg_bak 将同机部署的配置文件备份
   2) mv bridge.cfg_diff_server bridge.cfg 使用新的配置文件，变动的内容如下:
-  
-  ```
-[MANAGER_ADDR]
-10.144.172.215:11100;
-[/MANAGER_ADDR]
-
-[PROC]
-client = 20000 : 10.161.37.104 : 11070
-server = 30000 : 10.144.172.215 : 11060 : 50 #send_size:50
-[/PROC]
-
-  ```
   
 其中client部署到10.161.37.104服务器上，server部署到10.144.172.215
 
