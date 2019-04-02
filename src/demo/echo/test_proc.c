@@ -1,4 +1,4 @@
-﻿/*
+/*
  * test_proc.c
  *
  *  Created on: 2013-12-25

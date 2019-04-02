@@ -1,4 +1,4 @@
-﻿/*
+/*
  * proc_bridge.c
  *
  *  Created on: 2013-12-22
