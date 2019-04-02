@@ -19,6 +19,7 @@ A distributed inter-proc communication system
 * _stlv_:一个简单的stlv格式打解包库
   * https://github.com/nmsoccer/stlv
   * 安装:下载安装包文件xx.zip; unzip xx.zip; ./install.sh
+      
 
 ### 开发接口  
 先行说明系统提供的API接口，其中的一些名词在随后介绍.  
@@ -39,11 +40,21 @@ A distributed inter-proc communication system
   * len:发送的数据长度
   * return: -1:错误 -2:发送区满 -3:发送区剩余空间不足 0:success
 
-* `int recv_from_bridge(int bd , char *recv_buff , int recv_len);`
+* `int recv_from_bridge(int bd , char *recv_buff , int recv_len , int *sender , int drop_time);`
   * bd:通过open_bridge返回的bridge_descriptor
   * recv_buff:接收缓冲区
   * recv_len:接收缓冲区长度
+  * sender: if Not NULL 则填写发包进程的proc_id
+  * drop_time:>=0丢弃发送时间超过drop_time(秒)的包; -1:不丢弃任何包
   * retrun: -1:错误 -2:暂无数据 -3:接收缓冲区长度不足 >0:sucess,实际接收的数据长度
+  
+* 安装开发库
+  * 下载proc_bridge-master.zip
+  * unzip proc_bridge-master.zip
+  * cd proc_bridge-master/src/library
+  * bash ./install_lib.sh 安装开发库到/usr/local/include/proc_bridge 和 /usr/local/lib(可能需要root权限)
+  
+
   
 ### 架构简介  
 下面以游戏服务器开发中常见的三段论，接入-逻辑-数据三层进程间通信架构举例，后续的扩展与说明均在此基础进行扩充    
@@ -154,15 +165,15 @@ server:client #s->c
   bash ./make_test.sh 
 =====================================
 make success
->>exe './tester -i 30000 -t 20000 -N echo -s &'
+>>exe './tester -i 30000 -N echo -s &'
 >>exe './tester -i 20000 -t 30000 -N echo -c'
 then to test echo...
 =====================================
   ```
   
-  8) 本地执行./tester -i 30000 -t 20000 -N echo -s &作为server;./tester -i 20000 -t 30000 -N echo -c作为client
+  8) 本地执行./tester -i 30000 -N echo -s &作为server;./tester -i 20000 -t 30000 -N echo -c作为client
   ```
-[nmsoccer@AY13122114553417645eZ echo]$ ./tester -i 30000 -t 20000 -N echo -s &
+[nmsoccer@AY13122114553417645eZ echo]$ ./tester -i 30000 -N echo -s &
 [1] 18438
 act as a server...
 [nmsoccer@AY13122114553417645eZ echo]$ ./tester -i 20000 -t 30000 -N echo -c
@@ -258,12 +269,12 @@ STAT *
 bash ./make_test.sh 
 =====================================
 make success
->>exe './tester -i 30000 -t 20000 -N echo -s &'
+>>exe './tester -i 30000 -N echo -s &'
 >>exe './tester -i 20000 -t 30000 -N echo -c'
 then to test echo...
 =====================================
   ```
-9) 在10.144.172.215服务器执行./tester -i 30000 -t 20000 -N echo -s   
+9) 在10.144.172.215服务器执行./tester -i 30000 -N echo -s   
 将tester复制到10.161.37.104服务器任意目录，并执行./tester -i 20000 -t 30000 -N echo -c
 ```
 [nmsoccerg@AY13122114553417645eZ echo]$ ./tester -i 30000 -t 20000 -N echo -s 
