@@ -15,7 +15,7 @@ fi
 #done
 echo "====================================="
 echo "make success"
-echo ">>exe './${TARGET} -i 30000 -t 20000 -N echo -s &'"
+echo ">>exe './${TARGET} -i 30000 -N echo -s &'"
 echo ">>exe './${TARGET} -i 20000 -t 30000 -N echo -c'"
 echo "then to test echo..."
 echo "====================================="

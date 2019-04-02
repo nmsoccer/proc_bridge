@@ -516,7 +516,7 @@ static int child_process()
 		}
 
 		/***Read Bridge*/
-		ret = recv_from_bridge(penv->bd , (char *)&rsp , sizeof(rsp) , 5);
+		ret = recv_from_bridge(penv->bd , (char *)&rsp , sizeof(rsp) , NULL , 5);
 		if(ret <= 0)
 			continue;
 

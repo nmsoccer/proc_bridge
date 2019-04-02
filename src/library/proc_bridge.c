@@ -1,4 +1,4 @@
-/*
+﻿/*
  * proc_bridge.c
  *
  *  Created on: 2013-12-22
@@ -41,7 +41,7 @@ static proc_bridge_env_t proc_bridge_env = {0 , 0 , NULL};
 /*************STATIC FUNC************/
 static bridge_hub_t *_open_bridge(char *name_space , int proc_id , int slogd);
 static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_data , int len , int slogd);
-static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len , int slogd , int drop_time);
+static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len , int slogd , int *sender , int drop_time);
 static int _close_bridge(bridge_hub_t *phub , int slogd);
 /****************END****************/
 
@@ -263,6 +263,7 @@ int send_to_bridge(int bd , int target_id , char *sending_data , int len)
  * @target_id:目标服务进程的全局ID
  * @recv_buff:接收数据缓冲区
  * @recv_len:接收缓冲区长度
+ * @sender:sender proc_id if not null
  * @drop_time: >=0丢弃发送时间超过drop_time(秒)的包; -1:不丢弃任何包
  * @return:
  * -1：错误
@@ -270,7 +271,7 @@ int send_to_bridge(int bd , int target_id , char *sending_data , int len)
  * -3：接收数据超出包长
  * else:实际接收的长度
  */
-int recv_from_bridge(int bd , char *recv_buff , int recv_len , int drop_time)
+int recv_from_bridge(int bd , char *recv_buff , int recv_len , int *sender , int drop_time)
 {
 	proc_bridge_env_t *penv = &proc_bridge_env;
 	proc_bridge_space_t *pspace = NULL;
@@ -294,7 +295,7 @@ int recv_from_bridge(int bd , char *recv_buff , int recv_len , int drop_time)
 		return -1;
 	}
 
-	return _recv_from_bridge(pspace->phub , recv_buff , recv_len , pspace->slogd , drop_time);
+	return _recv_from_bridge(pspace->phub , recv_buff , recv_len , pspace->slogd , sender , drop_time);
 }
 
 /*
@@ -555,6 +556,7 @@ static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_da
  * @recv_buff:接收数据缓冲区
  * @recv_len:接收缓冲区长度
  * @slogd:slog的描述句柄
+ * @sender:发送者proc_id if not null
  * @drop_time: >=0丢弃发送时间超过drop_time(秒)的包; -1:不丢弃任何包
  * @return:
  * -1：错误
@@ -562,7 +564,7 @@ static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_da
  * -3：接收数据超出包长
  * else:实际接收的长度
  */
-static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len , int slogd , int drop_time)
+static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len , int slogd , int *sender , int drop_time)
 {
 	char *recv_channel = NULL;
 	bridge_package_t *pstpack;
@@ -663,6 +665,8 @@ _recv_again:
 	if(!should_copy)
 		goto _recv_again;
 
+	if(sender)
+		*sender = pstpack->pack_head.sender_id;
 	return data_len;
 }
 

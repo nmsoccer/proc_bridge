@@ -1,4 +1,4 @@
-/*
+﻿/*
  * test_proc.c
  *
  *  Created on: 2013-12-25
@@ -37,6 +37,7 @@ int main(int argc , char **argv)
 	int target_id = 0;
 	int ret;
 	char role = 0; //0:server 1:client
+	int sender = 0;
 
 	/***Arg Check*/
 	if(argc <= 0)
@@ -54,7 +55,8 @@ int main(int argc , char **argv)
 			proc_id = atoi(optarg);
 			break;
 		case 't':
-			target_id = atoi(optarg);
+			if(optarg)
+				target_id = atoi(optarg);
 			break;
 		case 'N':
 			strncpy(name_space , optarg , sizeof(name_space));
@@ -79,7 +81,7 @@ int main(int argc , char **argv)
 		fprintf(stdout , "Error:proc id not set!\n");
 		return -1;
 	}
-	if(target_id<=0)
+	if(role==1 && target_id<=0)
 	{
 		fprintf(stdout , "Error:target id not set!\n");
 		return -1;
@@ -122,7 +124,7 @@ int main(int argc , char **argv)
 
 			sleep(1); //wait for msg arrived
 			/*read*/
-			ret = recv_from_bridge(bd , recv_buff , sizeof(recv_buff) , -1);
+			ret = recv_from_bridge(bd , recv_buff , sizeof(recv_buff) , NULL , -1);
 			if(ret < 0)
 			{
 				fprintf(stdout , "[client]recv from bridge failed! ret:%d\n" , ret);
@@ -141,7 +143,7 @@ int main(int argc , char **argv)
 			memset(recv_buff , 0 , sizeof(recv_buff));
 			memset(send_buff , 0 , sizeof(send_buff));
 			/*read*/
-			ret = recv_from_bridge(bd , recv_buff , sizeof(recv_buff) , -1);
+			ret = recv_from_bridge(bd , recv_buff , sizeof(recv_buff) , &sender , -1);
 			if(ret < 0)
 			{
 				//fprintf(stdout , "recv from bridge failed! ret:%d\n" , ret);
@@ -149,13 +151,13 @@ int main(int argc , char **argv)
 				continue;
 			}
 
-			//fprintf(stdout , "recv from bridge success! recved:%d , msg:%s\n" , ret , recv_buff);
+			fprintf(stdout , "[server ]recv from bridge success! recved:%d , msg:%s sender:%d \n" , ret , recv_buff , sender);
 			snprintf(send_buff , sizeof(send_buff) , "[server]: %s\n" , recv_buff);
 			/*send*/
-			ret = send_to_bridge(bd , target_id , send_buff , strlen(send_buff));
+			ret = send_to_bridge(bd , sender , send_buff , strlen(send_buff));
 			if(ret < 0)
 			{
-				fprintf(stdout , "[server]send to bridge failed! ret:%d,send_buff:%s\n" , ret , send_buff);
+				fprintf(stdout , "[server]send to bridge %d failed! ret:%d,send_buff:%s\n" , sender , ret , send_buff);
 			}
 			else
 			{
