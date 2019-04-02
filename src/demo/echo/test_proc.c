@@ -151,7 +151,7 @@ int main(int argc , char **argv)
 				continue;
 			}
 
-			fprintf(stdout , "[server ]recv from bridge success! recved:%d , msg:%s sender:%d \n" , ret , recv_buff , sender);
+			//fprintf(stdout , "[server ]recv from bridge success! recved:%d , msg:%s sender:%d \n" , ret , recv_buff , sender);
 			snprintf(send_buff , sizeof(send_buff) , "[server]: %s\n" , recv_buff);
 			/*send*/
 			ret = send_to_bridge(bd , sender , send_buff , strlen(send_buff));
