@@ -111,7 +111,7 @@ int iter_time_ticker(carrier_env_t *penv)
 				if(pticker->expire_ms < new_latest_expire)
 					new_latest_expire = pticker->expire_ms;
 
-				slog_log(slogd , SL_DEBUG , "<%s> expired tricker %s resets to %lld and new_latest_expire:%lld" , __FUNCTION__ , pticker->ticker_name ,
+				slog_log(slogd , SL_VERBOSE , "<%s> expired tricker %s resets to %lld and new_latest_expire:%lld" , __FUNCTION__ , pticker->ticker_name ,
 						pticker->expire_ms , new_latest_expire);
 			}
 

@@ -34,6 +34,7 @@ typedef struct _proc_entry_t
 #define TICK_CHECK_CLIENT_INFO 4000
 #define TICK_CHECK_RUN_STATISTICS 6500
 #define TICK_CHECK_SIG_STAT 2000
+#define TICK_ITER_SENDING_LIST 5000 //1500
 
 typedef int (* CARRIER_TICK) (void *arg); //return 0:single-shot; >0:next-expire-ms
 typedef struct _time_ticker_t
@@ -98,7 +99,8 @@ typedef struct _conn_traffic_t
 	unsigned int reset; //链接重置数
 	long latest_reset;	//最近一次重置
 	int buff_len;	//buff size
-	int lag_time;//	包滞留于缓冲区的平均时间
+	int delay_time;//	包滞留于缓冲区的平均时间,如果有(ms)
+	int delay_count;
 }conn_traffic_t;
 #define MAX_CONN_TRAFFIC_PER_PKG 50
 
@@ -128,13 +130,13 @@ typedef struct _target_detail
 	int proc_id;	/*目标proc_id*/
 	int fd;	/*使用的fd*/
 	struct _target_detail *next;
-	long latest_ts;	//最早进入的PACK时间戳 粗略计数
-	int ready_count;		//缓冲区里待发送的包数目 只是粗略计数
+	long long delay_starts_ms;	//缓冲区滞留数据的起始时间
+	long latest_send_ts;	//最近一次完成数据发送的时间戳
+	int latest_send_bytes; //最近一次完成发送的长度
+	//int ready_count;		//缓冲区里待发送的包数目 只是粗略计数
 	int tail;	// tail of valid data in buff
 	char *buff;
 	int buff_len;
-	//char main_buff[BRIDGE_PACK_LEN * 5];
-	//char back_buff[BRIDGE_PACK_LEN * 5];
 	conn_traffic_t traffic;
 }target_detail_t;
 
@@ -245,6 +247,26 @@ typedef struct _client_list
 	client_info_t *list;
 }client_list_t;
 
+/*
+ * sending_node
+ * 缓冲区有待发送数据的target
+ * 保留长度为target_count/5
+ */
+typedef struct _sending_node_t
+{
+	int proc_id;
+	target_detail_t *ptarget;
+	struct _sending_node_t *prev;
+	struct _sending_node_t *next;
+}sending_node_t;
+
+typedef struct _sending_list_t
+{
+	int total;
+	int valid;
+	sending_node_t head_node;
+}sending_list_t;
+
 
 /*
  * carrier_env
@@ -270,6 +292,7 @@ typedef struct _carrier_env_t
 		char sig_reload;	//信号重载
 	}sig_map;
 	tick_list_t tick_list;
+	sending_list_t sending_list;
 }carrier_env_t;
 
 

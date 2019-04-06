@@ -15,6 +15,7 @@
 #include <errno.h>
 #include "carrier_lib.h"
 #include "manager_lib.h"
+#include "carrier_base.h"
 
 extern int errno;
 static int send_msg_event(carrier_env_t *penv , int type , void *arg1 , void *arg2);
@@ -209,16 +210,21 @@ int parse_proc_info(char *proc_info , proc_entry_t *pentry , int slogd)
 /*
  * 清空某个channel的target发送缓冲区
  * -1:错误
- *  0:成功
+ *  0:未发送
+ *  1:发送全部
+ *  2:发送部分字节
  */
-int flush_target(target_detail_t *ptarget , int slogd)
+int flush_target(carrier_env_t *penv , target_detail_t *ptarget)
 {
 	int ret = 0;
 	int result = 0;
 	//ptarget is non-null
+    long long curr_ms = get_curr_ms();
+    int diff_ms = 0;
+    int slogd = penv->slogd;
 
-	slog_log(slogd , SL_VERBOSE , "%s is sending package to %d. rest_count:%d latest_ts:%ld" , __FUNCTION__ , ptarget->proc_id ,
-						ptarget->ready_count , ptarget->latest_ts);
+	slog_log(slogd , SL_VERBOSE , "%s is sending package to %d. delay_start_ms:%lld" , __FUNCTION__ , ptarget->proc_id ,
+			ptarget->delay_starts_ms);
 
 	//send
 	ret = send(ptarget->fd ,  ptarget->buff , ptarget->tail , 0);
@@ -231,19 +237,19 @@ int flush_target(target_detail_t *ptarget , int slogd)
 		case EAGAIN:	//socket发送缓冲区满，稍后再试
 		//case EWOULDBLOCK:
 			slog_log(slogd , SL_INFO , "%s send failed for socket buff full!" , __FUNCTION__);
+				//检查网络阻塞 距离上一次成功发包已经过去了10s 同时
+			if((curr_ms/1000 - ptarget->latest_send_ts) > 10)
+			{
+				slog_log(slogd , SL_ERR , "%s connection to [%s:%d]<%s:%d> block more than 10s，will reset again!" , __FUNCTION__ ,
+						ptarget->target_name , ptarget->proc_id , ptarget->ip_addr , ptarget->port);
+				result = -1;
+			}
+			else
+				result = 0;
 		break;
 		default:
 			slog_log(slogd , SL_ERR , "%s send failed for err:%s. and will reset connection." , __FUNCTION__ , strerror(errno));
 			//此时出现错误，应主动关闭链接，用于清除本端和对端的缓冲区数据，防止错误包雪崩。并在后续进行重连
-			/*
-			close(ptarget->fd);
-			ptarget->fd = -1;
-			ptarget->connected = 0;
-			if(ptarget->buff)
-				free(ptarget->buff);
-			ptarget->buff = NULL;
-			ptarget->buff_len = 0;
-			ptarget->tail = 0;*/
 			result = -1;
 		break;
 		}
@@ -254,18 +260,28 @@ int flush_target(target_detail_t *ptarget , int slogd)
 	//send all of data
 	if(ret == ptarget->tail)
 	{
-		slog_log(slogd , SL_VERBOSE , "%s flush all buff success!" , __FUNCTION__ );
 		ptarget->tail = 0;
-		ptarget->latest_ts = 0;
-		ptarget->ready_count = 0;
-		return 0;
+		diff_ms = curr_ms-ptarget->delay_starts_ms;
+		if(diff_ms > 0)
+		{
+			ptarget->traffic.delay_time = (ptarget->traffic.delay_time * ptarget->traffic.delay_count + diff_ms) / ptarget->traffic.delay_count;
+			ptarget->traffic.delay_count++;
+		}
+		ptarget->delay_starts_ms = 0;
+		ptarget->latest_send_bytes = ret;
+		ptarget->latest_send_ts = (long)(curr_ms/1000);
+		slog_log(slogd , SL_VERBOSE , "%s flush all buff success! delay:%d lat_send:%d lat_ts:%ld" , __FUNCTION__ , ptarget->traffic.delay_time ,
+				ptarget->latest_send_bytes , ptarget->latest_send_ts);
+		return 1;
 	}
 
 	//send part of data
 	slog_log(slogd , SL_VERBOSE , "%s flush part of buff! sended:%d all:%d" , __FUNCTION__ , ret , ptarget->tail);
 	memmove(ptarget->buff , &ptarget->buff[ret] , ptarget->tail-ret);
 	ptarget->tail = ptarget->tail - ret;
-	return 0;
+	ptarget->latest_send_bytes = ret;
+	ptarget->latest_send_ts = (long)(curr_ms/1000);
+	return 2;
 }
 
 /*
@@ -398,7 +414,7 @@ int send_inner_proto(carrier_env_t *penv , target_detail_t *ptarget , int proto 
 	ppkg->pack_head.data_len = sizeof(inner_proto_t);
 	ppkg->pack_head.recver_id = ptarget->proc_id;
 	ppkg->pack_head.sender_id = penv->proc_id;
-	ppkg->pack_head.send_ts = time(NULL);
+	ppkg->pack_head.send_ms = get_curr_ms();
 	ppkg->pack_head.pkg_type = BRIDGE_PKG_TYPE_INNER_PROTO;
 
 	/***Send*/
@@ -419,6 +435,8 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 	bridge_package_t *ppkg = NULL;
 	inner_proto_t *preq = NULL;
 	int slogd = -1;
+	//long long curr_ms = get_curr_ms();
+	//int diff_ms = 0;
 
 	/***Arg Check*/
 	if(!penv || !package)
@@ -429,9 +447,24 @@ int recv_inner_proto(carrier_env_t *penv , client_info_t *pclient , char *packag
 	preq = (inner_proto_t *)ppkg->pack_data;
 	slogd = penv->slogd;
 
+	//此类协议也加入统计
+	/*
+	//traffic
+	pclient->traffic.handled++;
+	pclient->traffic.max_size = (ppkg->pack_head.data_len>pclient->traffic.max_size)?ppkg->pack_head.data_len:pclient->traffic.max_size;
+	if(pclient->traffic.min_size <= 0)
+		pclient->traffic.min_size = ppkg->pack_head.data_len;
+	else
+		pclient->traffic.min_size = (ppkg->pack_head.data_len<pclient->traffic.min_size)?ppkg->pack_head.data_len:pclient->traffic.min_size;
+	pclient->traffic.ave_size = (pclient->traffic.ave_size*(pclient->traffic.handled-1)+ppkg->pack_head.data_len)/pclient->traffic.handled;
+	diff_ms = curr_ms - ppkg->pack_head.send_ms;
+	diff_ms = diff_ms<=0?0:diff_ms;
+	pclient->traffic.delay_time = (pclient->traffic.delay_time * pclient->traffic.delay_count + diff_ms)/(pclient->traffic.delay_count + 1);
+	pclient->traffic.delay_count++;*/
+
 	/***Handle*/
-	slog_log(slogd , SL_INFO , "<%s> proto:%d src:%d ts:%ld" , __FUNCTION__  , preq->type , ppkg->pack_head.sender_id ,
-			ppkg->pack_head.send_ts);
+	slog_log(slogd , SL_INFO , "<%s> proto:%d src:%d ts:%lld" , __FUNCTION__  , preq->type , ppkg->pack_head.sender_id ,
+			ppkg->pack_head.send_ms);
 	switch(preq->type)
 	{
 	case INNER_PROTO_PING:
@@ -481,7 +514,7 @@ static int recv_inner_proto_rsp(carrier_env_t *penv , client_info_t *pclient , c
 
 	pbridge_pkg = (bridge_package_t *)bridge_pack_buff;
 	pbridge_pkg->pack_head.data_len = sizeof(manager_cmd_rsp_t);
-	pbridge_pkg->pack_head.send_ts = time(NULL);
+	pbridge_pkg->pack_head.send_ms = get_curr_ms();
 	pbridge_pkg->pack_head.sender_id = penv->proc_id;
 	pbridge_pkg->pack_head.recver_id = penv->proc_id;
 
@@ -492,8 +525,8 @@ static int recv_inner_proto_rsp(carrier_env_t *penv , client_info_t *pclient , c
 	pproto_rsp = &prsp->data.proto;
 
 	/***Handle*/
-	slog_log(slogd , SL_INFO , "<%s> proto:%d src:%d ts:%ld" , __FUNCTION__  , preq->type , ppkg->pack_head.sender_id ,
-			ppkg->pack_head.send_ts);
+	slog_log(slogd , SL_INFO , "<%s> proto:%d src:%d ts:%lld" , __FUNCTION__  , preq->type , ppkg->pack_head.sender_id ,
+			ppkg->pack_head.send_ms);
 
 	switch(preq->type)
 	{
@@ -587,8 +620,8 @@ int manager_handle(manager_info_t *pmanager , char *package , int slogd)
 	/***Parse Info*/
 	pkg = (bridge_package_t *)package;
 	pmsg = (carrier_msg_t *)pkg->pack_data;
-	slog_log(slogd , SL_INFO , "<%s> recv msg. from:%d msg:%d ts:%ld" , __FUNCTION__ , pkg->pack_head.sender_id , pmsg->msg ,
-			pkg->pack_head.send_ts);
+	slog_log(slogd , SL_INFO , "<%s> recv msg. from:%d msg:%d ts:%lld" , __FUNCTION__ , pkg->pack_head.sender_id , pmsg->msg ,
+			pkg->pack_head.send_ms);
 
 	/***Switch*/
 	switch(pmsg->msg)
@@ -1186,7 +1219,7 @@ static int send_msg_event(carrier_env_t *penv , int type , void *arg1 , void *ar
 	curr_ts = time(NULL);
 	/***Fill Msg*/
 	ppkg = (bridge_package_t *)pack_buff;
-	ppkg->pack_head.send_ts = curr_ts;
+	ppkg->pack_head.send_ms = get_curr_ms();
 	ppkg->pack_head.data_len = sizeof(carrier_msg_t);
 	ppkg->pack_head.sender_id = from;
 	ppkg->pack_head.pkg_type = BRIDGE_PKG_TYPE_CR_MSG;
@@ -1274,7 +1307,7 @@ static int send_msg_error(carrier_env_t *penv , int type , void *arg1 , void *ar
 	curr_ts = time(NULL);
 	/***Fill Msg*/
 	ppkg = (bridge_package_t *)pack_buff;
-	ppkg->pack_head.send_ts = curr_ts;
+	ppkg->pack_head.send_ms = get_curr_ms();
 	ppkg->pack_head.data_len = sizeof(carrier_msg_t);
 	ppkg->pack_head.sender_id = from;
 	ppkg->pack_head.pkg_type = BRIDGE_PKG_TYPE_CR_MSG;
@@ -1378,11 +1411,20 @@ static int inner_send_pkg(carrier_env_t *penv , target_detail_t *ptarget , bridg
 	if(ptarget->tail > 0)
 	{
 		slog_log(slogd , SL_VERBOSE , "%s is sending old package to %d. data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
-		ret = flush_target(ptarget , slogd);
-		if(ret < 0)	//出现无法恢复错误，则已经重置链接 丢弃当前包
+		ret = flush_target(penv , ptarget);
+		switch(ret)
 		{
+		case -1:	//出现网络故障，则重置链接
 			close_target_fd(penv , ptarget , __FUNCTION__ , penv->epoll_fd , 1);
 			return -1;
+		break;
+		case 0:	//未发送数据或发送部分数据 需要加入sending_list
+		case 2:
+			append_sending_node(penv , ptarget);
+		break;
+		case 1:	//全部发送则不管了
+		default:
+		break;
 		}
 	}
 
@@ -1427,14 +1469,22 @@ static int inner_send_pkg(carrier_env_t *penv , target_detail_t *ptarget , bridg
 
 	//发送
 	ptarget->tail = stlv_len;
-	ptarget->latest_ts = time(NULL);
-	ptarget->ready_count = 1;
+	ptarget->delay_starts_ms = get_curr_ms();
 	slog_log(slogd , SL_VERBOSE , "<%s> is sending curr package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
-	ret = flush_target(ptarget , slogd);
-	if(ret < 0)
+	ret = flush_target(penv , ptarget);
+	switch(ret)
 	{
+	case -1:	//出现网络故障，则重置链接
 		close_target_fd(penv , ptarget , __FUNCTION__ , penv->epoll_fd , 1);
 		return -1;
+	break;
+	case 0:	//未发送数据或发送部分数据 需要加入sending_list
+	case 2:
+		append_sending_node(penv , ptarget);
+	break;
+	case 1:	//全部发送则不管了
+	default:
+	break;
 	}
 	return 0;
 }
@@ -1595,6 +1645,214 @@ char *format_time_stamp(long ts)
 	return time_buff;
 }
 
+int append_sending_node(carrier_env_t *penv , target_detail_t *ptarget)
+{
+	int slogd = -1;
+	sending_node_t *pnode = NULL;
+	sending_node_t *pempty = NULL;
+
+	/***Arg Check*/
+	if(!penv || !ptarget)
+		return -1;
+
+	slogd = penv->slogd;
+	/***Search whether target Exist and Remark an empty node if exist*/
+	pnode = penv->sending_list.head_node.next;
+	while(pnode)
+	{
+		if(pnode->proc_id <= 0)
+			pempty = pnode;
+
+		if(pnode->proc_id == ptarget->proc_id)
+			return 0;
+
+		pnode = pnode->next;
+	}
+
+	/***Get an Empty Node*/
+	if(pempty)
+	{
+		pempty->proc_id = ptarget->proc_id;
+		pempty->ptarget = ptarget;
+		penv->sending_list.valid++;
+		slog_log(slogd , SL_DEBUG , "<%s> remark an empty node success! <%s:%d> total:%d valid:%d" , __FUNCTION__ , ptarget->target_name ,
+				ptarget->proc_id , penv->sending_list.total , penv->sending_list.valid);
+		return 0;
+	}
+
+	/***Alloc*/
+	pnode = calloc(1 , sizeof(sending_node_t));
+	if(!pnode)
+	{
+		slog_log(slogd , SL_ERR , "<%s> alloc node failed! err:%s" , __FUNCTION__ , strerror(errno));
+		return -1;
+	}
+
+	//update pnode
+	pnode->proc_id = ptarget->proc_id;
+	pnode->ptarget = ptarget;
+	pnode->prev = &penv->sending_list.head_node;
+	if(penv->sending_list.head_node.next)
+		penv->sending_list.head_node.next->prev = pnode;
+	pnode->next = penv->sending_list.head_node.next;
+	penv->sending_list.head_node.next = pnode;
+
+	//update list
+	penv->sending_list.total++;
+	penv->sending_list.valid++;
+	slog_log(slogd , SL_DEBUG , "<%s> alloc new node success! <%s:%d> total:%d valid:%d" , __FUNCTION__ , ptarget->target_name ,
+					ptarget->proc_id , penv->sending_list.total , penv->sending_list.valid);
+	return 0;
+}
+
+int del_sending_node(carrier_env_t *penv , target_detail_t *ptarget)
+{
+	int slogd = -1;
+	sending_node_t *pnode = NULL;
+	sending_node_t *ptmp = NULL;
+	char found = 0;
+	/***Arg Check*/
+	if(!penv || !ptarget)
+		return -1;
+
+	slogd = penv->slogd;
+	pnode = penv->sending_list.head_node.next;
+	/***Search*/
+	while(pnode)
+	{
+		if(pnode->proc_id == ptarget->proc_id)
+		{
+			found = 1;
+			break;
+		}
+		pnode = pnode->next;
+	}
+
+	if(!found)
+	{
+		slog_log(slogd , SL_ERR , "<%s> target not found! proc_id:%d" , __FUNCTION__ , ptarget->proc_id);
+		return -1;
+	}
+
+	/***Del Node*/
+	//1.如果剩余节点小于总量的1/5则不再释放，作为预分配节点保留
+	if(penv->sending_list.total <= (penv->ptarget_info->target_count))
+	{
+		slog_log(slogd , SL_DEBUG , "<%s> rest node will be reserved %d vs %d." , __FUNCTION__ , penv->sending_list.total ,
+				penv->ptarget_info->target_count);
+
+		pnode->proc_id = -1;
+		pnode->ptarget = NULL;
+		penv->sending_list.valid--;
+		return 0;
+	}
+
+	//2.剩余节点>=1/5则删除节点
+	ptmp = pnode->prev;
+	ptmp->next = pnode->next;
+	if(pnode->next)
+		pnode->next->prev = ptmp;
+	free(pnode);
+
+	penv->sending_list.total--;
+	penv->sending_list.valid--;
+	slog_log(slogd , SL_DEBUG , "<%s> will destroy node! proc_id:%d rest total:%d valid:%d" , __FUNCTION__ , ptarget->proc_id ,
+			penv->sending_list.total ,	penv->sending_list.valid);
+	return 0;
+}
+
+//遍历sending node
+int iter_sending_node(void *arg)
+{
+	int ret = -1;
+	int slogd = -1;
+	sending_node_t *pnode = NULL;
+	sending_node_t *ptmp = NULL;
+	target_detail_t *ptarget = NULL;
+	carrier_env_t *penv = (carrier_env_t *)arg;
+
+	if(!penv)
+		return -1;
+	slogd = penv->slogd;
+	pnode = penv->sending_list.head_node.next;
+
+	while(pnode && penv->sending_list.valid>0)
+	{
+		ptmp = pnode->next;
+
+		//handle
+		do
+		{
+			//1.节点有效性
+			if(pnode->proc_id <= 0)
+				break;
+
+			ptarget = pnode->ptarget;
+			//2.节点链接错误
+			if(!ptarget || ptarget->connected != TARGET_CONN_DONE)
+			{
+				slog_log(slogd , SL_ERR , "<%s> detect node:%d but target wrong!" , __FUNCTION__ , pnode->proc_id);
+				del_sending_node(penv , ptarget);
+				break;
+			}
+
+			//3.节点已无数据
+			if(ptarget->tail == 0)
+			{
+				slog_log(slogd , SL_DEBUG , "<%s> detect buff <%s:%d> empty!" , __FUNCTION__ , ptarget->target_name , pnode->proc_id);
+				del_sending_node(penv , ptarget);
+				break;
+			}
+
+			//4.flush
+			ret = flush_target(penv , ptarget);
+			if(ret < 0)
+			{
+				slog_log(slogd , SL_INFO , "<%s> flush target <%s:%d> failed! try to close it!" , __FUNCTION__ , ptarget->target_name ,
+						ptarget->proc_id);
+				close_target_fd(penv , ptarget , __FUNCTION__ , penv->epoll_fd , 1);
+				del_sending_node(penv , ptarget);
+			}
+			else if(ret == 1)	//完全清空 则删除节点
+			{
+				slog_log(slogd , SL_DEBUG , "<%s> flush <%s:%d> complete!" , __FUNCTION__ , ptarget->target_name , pnode->proc_id);
+				del_sending_node(penv , ptarget);
+			}
+
+			break;
+		}
+		while(0);
+
+		//next
+		pnode = ptmp;
+	}
+
+	return 0;
+}
+
+int del_sending_list(carrier_env_t *penv)
+{
+	int slogd = -1;
+	sending_node_t *pnode = NULL;
+	sending_node_t *ptmp = NULL;
+	if(!penv)
+		return -1;
+
+	slogd = penv->slogd;
+	pnode = penv->sending_list.head_node.next;
+	slog_log(slogd , SL_INFO , "<%s> sending_list:total:%d valid:%d" , __FUNCTION__ , penv->sending_list.total , penv->sending_list.valid);
+	//free node
+	while(pnode)
+	{
+		ptmp = pnode->next;
+		free(pnode);
+		pnode = ptmp;
+	}
+
+	//clear info
+	memset(&penv->sending_list , 0 , sizeof(sending_list_t));
+	return 0;
+}
 
 static int do_manage_cmd_stat(carrier_env_t *penv , manager_cmd_req_t *preq)
 {
@@ -1623,7 +1881,7 @@ static int do_manage_cmd_stat(carrier_env_t *penv , manager_cmd_req_t *preq)
 
 	pbridge_pkg = (bridge_package_t *)bridge_pack_buff;
 	pbridge_pkg->pack_head.data_len = sizeof(manager_cmd_rsp_t);
-	pbridge_pkg->pack_head.send_ts = time(NULL);
+	pbridge_pkg->pack_head.send_ms = get_curr_ms();
 	pbridge_pkg->pack_head.sender_id = penv->proc_id;
 	pbridge_pkg->pack_head.recver_id = penv->proc_id;
 
@@ -1730,7 +1988,7 @@ static int do_manage_cmd_error(carrier_env_t *penv , manager_cmd_req_t *preq)
 
 	pbridge_pkg = (bridge_package_t *)bridge_pack_buff;
 	pbridge_pkg->pack_head.data_len = sizeof(manager_cmd_rsp_t);
-	pbridge_pkg->pack_head.send_ts = time(NULL);
+	pbridge_pkg->pack_head.send_ms = get_curr_ms();
 	pbridge_pkg->pack_head.sender_id = penv->proc_id;
 	pbridge_pkg->pack_head.recver_id = penv->proc_id;
 
@@ -1862,7 +2120,7 @@ static int do_manage_cmd_proto(carrier_env_t *penv , manager_cmd_req_t *preq)
 
 	pbridge_pkg = (bridge_package_t *)bridge_pack_buff;
 	pbridge_pkg->pack_head.data_len = sizeof(manager_cmd_rsp_t);
-	pbridge_pkg->pack_head.send_ts = time(NULL);
+	pbridge_pkg->pack_head.send_ms = get_curr_ms();
 	pbridge_pkg->pack_head.sender_id = penv->proc_id;
 	pbridge_pkg->pack_head.recver_id = penv->proc_id;
 
@@ -2045,8 +2303,8 @@ static int recv_inner_proto_req(carrier_env_t *penv , client_info_t *pclient , c
 	slogd = penv->slogd;
 
 	/***Handle*/
-	slog_log(slogd , SL_INFO , "<%s> proto:%d src:%d ts:%ld" , __FUNCTION__  , preq->type , ppkg->pack_head.sender_id ,
-			ppkg->pack_head.send_ts);
+	slog_log(slogd , SL_INFO , "<%s> proto:%d src:%d ts:%lld" , __FUNCTION__  , preq->type , ppkg->pack_head.sender_id ,
+			ppkg->pack_head.send_ms);
 
 	/***Check*/
 	if(preq->type != INNER_PROTO_VERIFY_REQ)
@@ -2216,4 +2474,3 @@ static int recv_inner_proto_req(carrier_env_t *penv , client_info_t *pclient , c
 
 	return 0;
 }
-

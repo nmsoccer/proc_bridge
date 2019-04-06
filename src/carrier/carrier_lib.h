@@ -120,7 +120,7 @@ extern int manager_handle(manager_info_t *pmanager , char *package , int slogd);
  * -1:错误
  *  0:成功
  */
-extern int flush_target(target_detail_t *ptarget , int slogd);
+extern int flush_target(carrier_env_t *penv , target_detail_t *ptarget);
 /*
  * 初始化manager的管理列表
  */
@@ -151,5 +151,11 @@ extern int do_verify_key(carrier_env_t *penv , char *key , int  key_len);
 extern int expand_target_buff(target_detail_t *ptarget , int slogd);
 //关闭target
 extern int close_target_fd(carrier_env_t *penv , target_detail_t *ptarget , const char *reason , int epoll_fd , char del_from_epoll);
+//正发送节点
+extern int append_sending_node(carrier_env_t *penv , target_detail_t *ptarget);
+extern int del_sending_node(carrier_env_t *penv , target_detail_t *ptarget);
+//遍历sending node
+extern int iter_sending_node(void *arg);
+extern int del_sending_list(carrier_env_t *penv);
 
 #endif /* CARRIER_LIB_H_*/

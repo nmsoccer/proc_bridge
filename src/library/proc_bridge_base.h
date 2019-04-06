@@ -42,7 +42,8 @@ struct _bridge_package_head
 	int data_len;	/*数据区长度*/
 	int sender_id;	/*发射者ID*/
 	int recver_id;	/*接收者ID*/
-	long send_ts;	/*发送的时间戳*/
+	//long send_ts;	/*发送的时间戳*/
+	long long send_ms; /*发送的时间戳(ms)*/
 	char pkg_type;	/*包类型:refer BRIDGE_PKG_TYPE_xx*/
 } __attribute__((packed));
 typedef struct _bridge_package_head bridge_package_head_t;

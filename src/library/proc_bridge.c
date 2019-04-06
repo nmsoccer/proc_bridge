@@ -11,6 +11,7 @@
 #include <getopt.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <sys/time.h>
 #include <time.h>
 #include <errno.h>
 #include "proc_bridge.h"
@@ -43,6 +44,8 @@ static bridge_hub_t *_open_bridge(char *name_space , int proc_id , int slogd);
 static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_data , int len , int slogd);
 static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len , int slogd , int *sender , int drop_time);
 static int _close_bridge(bridge_hub_t *phub , int slogd);
+//get curr ms
+static long long _get_curr_ms();
 /****************END****************/
 
 /*
@@ -496,7 +499,7 @@ static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_da
 	pstpack->pack_head.sender_id = phub->proc_id;
 	pstpack->pack_head.recver_id = target_id;
 	pstpack->pack_head.data_len = len;
-	pstpack->pack_head.send_ts = time(NULL);
+	pstpack->pack_head.send_ms = _get_curr_ms();
 
 	//5.从buff拷贝
 	tail_pos = phub->send_tail;
@@ -623,10 +626,10 @@ _recv_again:
 	pstpack = (bridge_package_t *)buff;
 	data_len = pstpack->pack_head.data_len;
 	should_copy = 1;
-	if(drop_time>=0 && ((curr_ts-pstpack->pack_head.send_ts)>=drop_time))
+	if(drop_time>=0 && ((curr_ts-(long)(pstpack->pack_head.send_ms/1000))>=drop_time))
 	{
-		slog_log(slogd , SL_INFO , "<%s> will drop package out drop_time:%d curr:%ld send:%ld" , __FUNCTION__ , drop_time , curr_ts ,
-				pstpack->pack_head.send_ts);
+		slog_log(slogd , SL_INFO , "<%s> will drop package out drop_time:%d curr:%ld send:%lld" , __FUNCTION__ , drop_time , curr_ts ,
+				pstpack->pack_head.send_ms);
 		should_copy = 0;
 	}
 
@@ -752,4 +755,15 @@ int get_bridge_shm_key(char *name_space , int proc_id , int creater , int slogd)
 			file_stat.st_mtime , file_stat.st_ino , proc_id , my_key);
 	close(fd);
 	return my_key;
+}
+
+//get curr ms
+static long long _get_curr_ms()
+{
+	int ret = -1;
+	struct timeval tv;
+	ret = gettimeofday(&tv , NULL);
+	if(ret < 0)
+		return -1;
+	return ((long long)tv.tv_sec*1000)+tv.tv_usec/1000;
 }

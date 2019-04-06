@@ -371,20 +371,6 @@ int main(int argc , char **argv)
 			return -1;
 		}
 
-		//report log
-		/*
-		memset(&slog_option , 0 , sizeof(slog_option));
-		slog_option.log_size = (20*1024*1024);
-		slog_option.format = SLF_RAW;
-		strncpy(slog_option.type_value._local.log_name , MANAGER_REPORT_LOG , sizeof(slog_option.type_value._local.log_name));
-		penv->pmanager->report_file = fopen(MANAGER_REPORT_LOG , "rw");
-		if(!penv->pmanager->report_file)
-		{
-			slog_log(slogd , SL_ERR , "manager:%d starts failed! report log:%s can not open!" , penv->proc_id , MANAGER_REPORT_LOG);
-			return -1;
-		}
-		*/
-
 		//init item list
 		if(init_manager_item_list(penv) < 0)
 		{
@@ -413,15 +399,14 @@ int main(int argc , char **argv)
 		total_cost = 0;
 		start_ms = get_curr_ms();
 
-		//world_tick
-		//cost_ms = world_tick();
+		//timer tick
 		cost_ms = iter_time_ticker(penv);
-		slog_log(penv->slogd , SL_VERBOSE , "main:iter_ticker:cost:%ld" , cost_ms);
+		//slog_log(penv->slogd , SL_VERBOSE , "main:iter_ticker:cost:%ld" , cost_ms);
 		total_cost += cost_ms;
 
 		/*取包发送*/
 		cost_ms = dispatch_bridge(reward_ms);
-		slog_log(penv->slogd , SL_VERBOSE , "main:dispatch_bridge:cost:%ld" , cost_ms);
+		//slog_log(penv->slogd , SL_VERBOSE , "main:dispatch_bridge:cost:%ld" , cost_ms);
 		total_cost += cost_ms;
 
 		/*epoll wait*/
@@ -553,7 +538,7 @@ int main(int argc , char **argv)
 			else
 				usleep((end_ms-start_ms)*1000);
 		}
-		slog_log(penv->slogd , SL_VERBOSE , "main:tick:reward_ms:%d" , reward_ms);
+		//slog_log(penv->slogd , SL_VERBOSE , "main:tick:reward_ms:%d" , reward_ms);
 	}
 
 }
@@ -949,6 +934,7 @@ static int dispatch_bridge(int reward_ms)
 		else if(bridge_pack_len == -2)
 		{
 			//slog_log(slogd , SL_DEBUG , "%s fetch failed for empty buff!" , __FUNCTION__);
+			// try flush
 			break;
 		}
 		else if(bridge_pack_len == 0)
@@ -962,8 +948,8 @@ static int dispatch_bridge(int reward_ms)
 			break;
 
 		curr_ts = curr_ms/1000;
-		slog_log(slogd , SL_DEBUG , "%s fetch pack success! len:%d and target:%d ts:%ld" , __FUNCTION__ , bridge_pack_len , pstpack->pack_head.recver_id ,
-				pstpack->pack_head.send_ts);
+		slog_log(slogd , SL_DEBUG , "%s fetch pack success! len:%d and target:%d ts:%lld" , __FUNCTION__ , bridge_pack_len , pstpack->pack_head.recver_id ,
+				pstpack->pack_head.send_ms);
 		//manager获得的包都源于manager_tool 一般不作转发
 		if(penv->proc_id <= MANAGER_PROC_ID_MAX)
 		{
@@ -1029,11 +1015,22 @@ static int dispatch_bridge(int reward_ms)
 		if(ptarget->tail > 0)
 		{
 			slog_log(slogd , SL_DEBUG , "%s is sending old package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
-			ret = flush_target(ptarget , penv->slogd);
-			if(ret < 0)	//出现无法恢复错误，则应重置链接 丢弃当前包
+			ret = flush_target(penv , ptarget);
+			switch(ret)
 			{
+			case -1:	//出现网络故障，则重置链接
 				close_target_fd(penv , ptarget , __FUNCTION__ , penv->epoll_fd , 1);
 				continue;
+			break;
+			case 0:	//未发送数据或发送部分数据 需要加入sending_list
+			case 2:
+				append_sending_node(penv , ptarget);
+			break;
+			case 1:	//全部发送则不管了
+				append_sending_node(penv , ptarget);
+			break;
+			default:
+			break;
 			}
 		}
 
@@ -1131,13 +1128,23 @@ static int dispatch_bridge(int reward_ms)
 
 		//发送
 		ptarget->tail = stlv_len;
-		ptarget->latest_ts = time(NULL);
-		ptarget->ready_count = 1;
+		ptarget->delay_starts_ms = get_curr_ms();
 		slog_log(slogd , SL_INFO , "%s is sending curr package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
-		ret = flush_target(ptarget , penv->slogd);
-		if(ret < 0)
+		ret = flush_target(penv , ptarget);
+		switch(ret)
 		{
+		case -1:	//出现网络故障，则重置链接
 			close_target_fd(penv , ptarget , __FUNCTION__ , penv->epoll_fd , 1);
+		break;
+		case 0:	//未发送数据或发送部分数据 需要加入sending_list
+		case 2:
+			append_sending_node(penv , ptarget);
+		break;
+		case 1:	//全部发送则不管了
+			append_sending_node(penv , ptarget);
+		break;
+		default:
+		break;
 		}
 
 	}
@@ -1166,6 +1173,8 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 	int info;
 	int i = 0;
 	long curr_ts = time(NULL);
+	long long curr_ms = get_curr_ms();
+	int diff_ms = 0;
 
 	/***Search Client Info*/
 	pclient = client_list.list;
@@ -1300,7 +1309,6 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 			*/
 
 			//check manage
-			//if (carrier_env.proc_id <= MANAGER_PROC_ID_MAX && value_len==GET_PACK_LEN(sizeof(carrier_msg_t)))
 			if(recv_pkg->pack_head.pkg_type==BRIDGE_PKG_TYPE_CR_MSG)
 			{
 				manager_handle(carrier_env.pmanager , pack_buff , slogd);
@@ -1342,6 +1350,10 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 			else
 				pclient->traffic.min_size = (recv_pkg->pack_head.data_len<pclient->traffic.min_size)?recv_pkg->pack_head.data_len:pclient->traffic.min_size;
 			pclient->traffic.ave_size = (pclient->traffic.ave_size*(pclient->traffic.handled-1)+recv_pkg->pack_head.data_len)/pclient->traffic.handled;
+			diff_ms = curr_ms - recv_pkg->pack_head.send_ms;
+			diff_ms = diff_ms<=0?0:diff_ms;
+			pclient->traffic.delay_time = (pclient->traffic.delay_time * pclient->traffic.delay_count + diff_ms)/(pclient->traffic.delay_count + 1);
+			pclient->traffic.delay_count++;
 
 			//dispatch
 			ret = append_recv_channel(phub , pack_buff);
@@ -1629,6 +1641,13 @@ static int add_ticker(carrier_env_t *penv)
 	}
 	ret = append_carrier_ticker(penv , check_signal_stat , TIME_TICKER_T_CIRCLE , TICK_CHECK_SIG_STAT , "check_signal_stat" ,
 			penv);
+	if(ret < 0)
+	{
+		slog_log(slogd , SL_ERR , "<%s> add check_signal_stat failed!" , __FUNCTION__);
+		return -1;
+	}
+	ret = append_carrier_ticker(penv , iter_sending_node , TIME_TICKER_T_CIRCLE , TICK_ITER_SENDING_LIST , "iter_sending_list" ,
+				penv);
 	if(ret < 0)
 	{
 		slog_log(slogd , SL_ERR , "<%s> add check_signal_stat failed!" , __FUNCTION__);
@@ -2311,6 +2330,9 @@ static int copy_target_info(target_info_t *pdst , target_info_t *psrc , char ini
 			ptarget = ptarget->next;
 		}
 	}
+
+	//target地址可能发生变化 重置引用的结构
+	del_sending_list(penv);
 
 	//print
 	slog_log(slogd , SL_DEBUG , "=========AFTER=======");
