@@ -1027,7 +1027,6 @@ static int dispatch_bridge(int reward_ms)
 				append_sending_node(penv , ptarget);
 			break;
 			case 1:	//全部发送则不管了
-				append_sending_node(penv , ptarget);
 			break;
 			default:
 			break;
@@ -1141,7 +1140,6 @@ static int dispatch_bridge(int reward_ms)
 			append_sending_node(penv , ptarget);
 		break;
 		case 1:	//全部发送则不管了
-			append_sending_node(penv , ptarget);
 		break;
 		default:
 		break;
@@ -2400,7 +2398,7 @@ static int check_bridge(void *arg)
 	if(!penv)
 		return -1;
 	phub = penv->phub;
-	slog_log(slogd , SL_DEBUG , "<%s> old attached:%d" , __FUNCTION__ , phub->attached);
+	//slog_log(slogd , SL_VERBOSE , "<%s> old attached:%d" , __FUNCTION__ , phub->attached);
 
 	/***Get Read Attach*/
 	ret = shmctl(phub->shm_id , IPC_STAT , (struct shmid_ds *)&buff);

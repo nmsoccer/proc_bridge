@@ -1711,6 +1711,8 @@ int del_sending_node(carrier_env_t *penv , target_detail_t *ptarget)
 	sending_node_t *pnode = NULL;
 	sending_node_t *ptmp = NULL;
 	char found = 0;
+	int reserved = 0;
+
 	/***Arg Check*/
 	if(!penv || !ptarget)
 		return -1;
@@ -1735,11 +1737,11 @@ int del_sending_node(carrier_env_t *penv , target_detail_t *ptarget)
 	}
 
 	/***Del Node*/
-	//1.如果剩余节点小于总量的1/5则不再释放，作为预分配节点保留
-	if(penv->sending_list.total <= (penv->ptarget_info->target_count))
+	//1.如果剩余节点小于max(总量的1/5,1)则不再释放，作为预分配节点保留
+	reserved = (penv->ptarget_info->target_count/5)>1?(penv->ptarget_info->target_count/5):1;
+	if(penv->sending_list.total <= reserved)
 	{
-		slog_log(slogd , SL_DEBUG , "<%s> rest node will be reserved %d vs %d." , __FUNCTION__ , penv->sending_list.total ,
-				penv->ptarget_info->target_count);
+		slog_log(slogd , SL_DEBUG , "<%s> rest node will be reserved %d vs %d." , __FUNCTION__ , penv->sending_list.total ,reserved);
 
 		pnode->proc_id = -1;
 		pnode->ptarget = NULL;

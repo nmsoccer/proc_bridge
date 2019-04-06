@@ -34,7 +34,7 @@ typedef struct _proc_entry_t
 #define TICK_CHECK_CLIENT_INFO 4000
 #define TICK_CHECK_RUN_STATISTICS 6500
 #define TICK_CHECK_SIG_STAT 2000
-#define TICK_ITER_SENDING_LIST 5000 //1500
+#define TICK_ITER_SENDING_LIST 1500
 
 typedef int (* CARRIER_TICK) (void *arg); //return 0:single-shot; >0:next-expire-ms
 typedef struct _time_ticker_t
