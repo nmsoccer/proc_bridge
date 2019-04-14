@@ -75,7 +75,6 @@ static int fetch_send_channel(bridge_hub_t *phub , char *buff);
 //static int append_recv_channel(bridge_hub_t *phub , char *buff);
 static int read_client_socket(int socket , bridge_hub_t *phub);
 static int free_client_info(client_info_t *pclient);
-//static int flush_target(target_detail_t *ptarget);
 static int read_carrier_cfg(carrier_env_t *penv , char flag);
 static int print_target_info(target_info_t *ptarget_info);
 static int free_target_info(target_info_t *ptarget_info);
@@ -90,6 +89,9 @@ static int set_sock_option(int sock_fd , int send_size , int recv_size , int no_
 static int check_client_info(void *arg);
 static int check_run_statistics(void *arg);
 static int check_signal_stat(void *arg);
+static int recv_client_pkg(carrier_env_t *penv , client_info_t *pclient , bridge_package_t *pkg);
+static int expand_recv_buff(carrier_env_t *penv , client_info_t *pclient);
+static int flush_recving_buff(carrier_env_t *penv , client_info_t *pclient);
 
 //static bridge_hub_t *phub = NULL;
 //static int epoll_fd;
@@ -534,9 +536,14 @@ int main(int argc , char **argv)
 			reward_ms = 0;
 			end_ms = get_curr_ms();
 			if((end_ms-start_ms) >= MS_PER_TICK)
-				usleep(1000);
+			{
+				//usleep(500);
+			}
 			else
-				usleep((end_ms-start_ms)*1000);
+			{
+				usleep(1000);
+				//usleep((end_ms-start_ms)*1000);
+			}
 		}
 		//slog_log(penv->slogd , SL_VERBOSE , "main:tick:reward_ms:%d" , reward_ms);
 	}
@@ -1089,6 +1096,7 @@ static int dispatch_bridge(int reward_ms)
 
 
 			ptarget->tail += stlv_len;
+			ptarget->max_tail = ptarget->tail>ptarget->max_tail?ptarget->tail:ptarget->max_tail;
 			continue;
 		}
 
@@ -1127,6 +1135,7 @@ static int dispatch_bridge(int reward_ms)
 
 		//发送
 		ptarget->tail = stlv_len;
+		ptarget->max_tail = ptarget->tail>ptarget->max_tail?ptarget->tail:ptarget->max_tail;
 		ptarget->delay_starts_ms = get_curr_ms();
 		slog_log(slogd , SL_INFO , "%s is sending curr package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
 		ret = flush_target(penv , ptarget);
@@ -1295,24 +1304,12 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 			slog_log(slogd , SL_DEBUG , "%s recv an pack! value:%d pack_len:%d pos:%d tail:%d. src:%d dest:%d pkg_type:%d" , __FUNCTION__ , value_len , pack_len ,
 					pos , pclient->tail , recv_pkg->pack_head.sender_id , recv_pkg->pack_head.recver_id , recv_pkg->pack_head.pkg_type);
 
-			/*just test
-			//记录包数据.[内部协议不进入统计]
-						pbridge_info->recv.handled++;
-						pbridge_info->recv.max_pkg_size = (recv_pkg->pack_head.data_len>pbridge_info->recv.max_pkg_size)?recv_pkg->pack_head.data_len:pbridge_info->recv.max_pkg_size;
-						if(pbridge_info->recv.min_pkg_size <= 0)
-							pbridge_info->recv.min_pkg_size = recv_pkg->pack_head.data_len;
-						else
-							pbridge_info->recv.min_pkg_size = (recv_pkg->pack_head.data_len<pbridge_info->recv.min_pkg_size)?recv_pkg->pack_head.data_len:pbridge_info->recv.min_pkg_size;
-						pbridge_info->recv.aver_pkg_size = (pbridge_info->recv.aver_pkg_size*(pbridge_info->recv.handled-1)+recv_pkg->pack_head.data_len)/pbridge_info->recv.handled;
-			*/
-
 			//check manage
 			if(recv_pkg->pack_head.pkg_type==BRIDGE_PKG_TYPE_CR_MSG)
 			{
 				manager_handle(carrier_env.pmanager , pack_buff , slogd);
 				continue;	//no need to dispatch to channel
 			}
-
 
 			//check inner-proto
 			if(recv_pkg->pack_head.pkg_type == BRIDGE_PKG_TYPE_INNER_PROTO)
@@ -1353,24 +1350,26 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 			pclient->traffic.delay_time = (pclient->traffic.delay_time * pclient->traffic.delay_count + diff_ms)/(pclient->traffic.delay_count + 1);
 			pclient->traffic.delay_count++;
 
+			//try flush buff
+
+
 			//dispatch
-			ret = append_recv_channel(phub , pack_buff);
+			//ret = append_recv_channel(phub , pack_buff);
+			ret = recv_client_pkg(penv , pclient , (bridge_package_t *)pack_buff);
 			if(ret == 0)
 				slog_log(slogd , SL_VERBOSE , "%s >>Read From Socket and dispatch pack to Bridge success! type:%d,length:%d,src:%d,recv:%d,data_len:%d" , __FUNCTION__ , info , value_len , ((bridge_package_t*)pack_buff)->pack_head.sender_id ,
 								((bridge_package_t*)pack_buff)->pack_head.recver_id , ((bridge_package_t*)pack_buff)->pack_head.data_len);
-			else if (ret == -1)
-			{
-				slog_log(slogd , SL_ERR , "%s >>Read From Socket and dispatch pack to Bridge failed for err! type:%d,length:%d,src:%d,recv:%d,data_len:%d" , __FUNCTION__ , info , value_len , ((bridge_package_t*)pack_buff)->pack_head.sender_id ,
-								((bridge_package_t*)pack_buff)->pack_head.recver_id , ((bridge_package_t*)pack_buff)->pack_head.data_len);
-				pbridge_info->recv.dropped++;
-				pbridge_info->recv.latest_drop = curr_ts;
-				pclient->traffic.dropped++;
-				pclient->traffic.latest_drop = curr_ts;
-			}
 			else
 			{
-				slog_log(slogd , SL_ERR , "%s >>Read From Socket and dispatch pack to Bridge failed for channel full! type:%d,length:%d,src:%d,recv:%d,data_len:%d" , __FUNCTION__ , info , value_len , ((bridge_package_t*)pack_buff)->pack_head.sender_id ,
-								((bridge_package_t*)pack_buff)->pack_head.recver_id , ((bridge_package_t*)pack_buff)->pack_head.data_len);
+				/*
+				if(ret == 1)
+					slog_log(slogd , SL_ERR , "%s >>Read From Socket and dispatch pack to Bridge failed for err! type:%d,length:%d,src:%d,recv:%d,data_len:%d" , __FUNCTION__ , info , value_len , ((bridge_package_t*)pack_buff)->pack_head.sender_id ,
+									((bridge_package_t*)pack_buff)->pack_head.recver_id , ((bridge_package_t*)pack_buff)->pack_head.data_len);
+				else
+					slog_log(slogd , SL_ERR , "%s >>Read From Socket and dispatch pack to Bridge failed for channel full! type:%d,length:%d,src:%d,recv:%d,data_len:%d" , __FUNCTION__ , info , value_len , ((bridge_package_t*)pack_buff)->pack_head.sender_id ,
+									((bridge_package_t*)pack_buff)->pack_head.recver_id , ((bridge_package_t*)pack_buff)->pack_head.data_len);*/
+				slog_log(slogd , SL_ERR , "%s >>Read From Socket and dispatch pack to Bridge failed ! type:%d,length:%d,src:%s,recv:%d,data_len:%d" , __FUNCTION__ , info , value_len , pclient->proc_name ,
+									((bridge_package_t*)pack_buff)->pack_head.recver_id , ((bridge_package_t*)pack_buff)->pack_head.data_len);
 				pbridge_info->recv.dropped++;
 				pbridge_info->recv.latest_drop = curr_ts;
 				pclient->traffic.dropped++;
@@ -2512,4 +2511,219 @@ static int check_signal_stat(void *arg)
 			penv->sig_map.sig_reload = 0;
 	}
 	return 0;
+}
+
+//接收来自客户端的pkg
+//return:-1:参数错误 -2:缓冲区满且到达上限 0:投递成功
+static int recv_client_pkg(carrier_env_t *penv , client_info_t *pclient , bridge_package_t *pkg)
+{
+	int slogd = -1;
+	int ret = 0;
+	int pkg_len = 0;
+	long curr_ts = 0;
+
+	/***Arg Check*/
+	if(!penv || !pclient || !pkg)
+		return -1;
+	curr_ts = time(NULL);
+	slogd = penv->slogd;
+	pkg_len = GET_PACK_LEN(pkg->pack_head.data_len);
+
+	/***Try Flush Buff*/
+	if(pclient->recv_buffer.tail > 0)
+	{
+		flush_recving_buff(penv , pclient);
+	}
+
+	/***如果buff仍有数据则将数据放入buff中*/
+	if(pclient->recv_buffer.tail > 0)
+	{
+		//检查剩余空间
+		if((pclient->recv_buffer.buff_len-pclient->recv_buffer.tail) < pkg_len)
+		{
+			ret = expand_recv_buff(penv , pclient);
+			if(ret != 0)	//无法再扩展缓冲区了，则只能丢包
+				return -2;
+		}
+
+		//再做一次检查
+		if((pclient->recv_buffer.buff_len-pclient->recv_buffer.tail) < pkg_len)
+		{
+			slog_log(slogd , SL_FATAL , "<%s> fatal error! buff is still not enough after expanding! new_buf_len:%d tail:%d pkg_len:%d" , __FUNCTION__ ,
+					pclient->recv_buffer.buff_len , pclient->recv_buffer.tail , pkg_len);
+			return -2;
+		}
+
+		//投入缓冲区
+		if(pclient->recv_buffer.tail <= 0)
+			pclient->recv_buffer.delay_starts = curr_ts;
+		memcpy(&pclient->recv_buffer.buff[pclient->recv_buffer.tail] , (char *)pkg , pkg_len);
+
+		//update
+		pclient->recv_buffer.tail += pkg_len;
+		pclient->recv_buffer.max_tail = pclient->tail>pclient->recv_buffer.max_tail?pclient->tail:pclient->recv_buffer.max_tail;
+		return 0;
+	}
+
+	/***尝试直接投递*/
+	ret = append_recv_channel(penv->phub , (char *)pkg);
+	if(ret == 0)	//成功
+		return 0;
+
+	/***投递失败则放入缓冲区*/
+	//检查剩余空间
+	if((pclient->recv_buffer.buff_len-pclient->recv_buffer.tail) < pkg_len)
+	{
+		ret = expand_recv_buff(penv , pclient);
+		if(ret != 0)	//无法再扩展缓冲区了，则只能丢包
+			return -2;
+	}
+
+	//再做一次检查
+	if((pclient->recv_buffer.buff_len-pclient->recv_buffer.tail) < pkg_len)
+	{
+		slog_log(slogd , SL_FATAL , "<%s> fatal error! buff is still not enough after expanding! new_buf_len:%d tail:%d pkg_len:%d" , __FUNCTION__ ,
+				pclient->recv_buffer.buff_len , pclient->recv_buffer.tail , pkg_len);
+		return -2;
+	}
+
+	//投入缓冲区
+	if(pclient->recv_buffer.tail <= 0)
+		pclient->recv_buffer.delay_starts = curr_ts;
+	memcpy(&pclient->recv_buffer.buff[pclient->recv_buffer.tail] , (char *)pkg , pkg_len);
+
+	//update
+	pclient->recv_buffer.tail += pkg_len;
+	pclient->recv_buffer.max_tail = pclient->tail>pclient->recv_buffer.max_tail?pclient->tail:pclient->recv_buffer.max_tail;
+	return 0;
+}
+
+//扩展recv_buff缓冲区
+//return:-1 参数错误 -2:到达上限 0:success
+static int expand_recv_buff(carrier_env_t *penv , client_info_t *pclient)
+{
+	int slogd = -1;
+	int new_buff_len = 0;
+	char *pnew_buff = NULL;
+
+	/***Arg Check*/
+	if(!penv || !pclient)
+		return -1;
+	slogd = penv->slogd;
+
+	/***Check Size*/
+	if(pclient->recv_buffer.buff_len >= MAX_CLIENT_BUFF_SIZE)
+	{
+		slog_log(slogd , SL_ERR , "<%s> failed for buff len max![%d]" , __FUNCTION__ , pclient->recv_buffer.buff_len);
+		return -2;
+	}
+
+	/***Alloc New*/
+	if(pclient->recv_buffer.buff_len <= 0)
+		new_buff_len = (BRIDGE_PACK_LEN * 2);	//default
+	else
+		new_buff_len = pclient->recv_buffer.buff_len += (BRIDGE_PACK_LEN*2);
+	pnew_buff = calloc(1 , new_buff_len);
+	if(!pnew_buff)
+	{
+		slog_log(slogd , SL_ERR , "<%s> failed for alloc new. buff len:%d! err:%s" , __FUNCTION__ , new_buff_len , strerror(errno));
+		return -2;
+	}
+
+	/***Copy*/
+	if(pclient->recv_buffer.tail > 0 && pclient->recv_buffer.buff)
+		memcpy(pnew_buff , pclient->recv_buffer.buff , pclient->recv_buffer.tail);
+
+	/***Update*/
+	if(pclient->recv_buffer.buff)
+		free(pclient->recv_buffer.buff);
+	pclient->recv_buffer.buff = pnew_buff;
+	pclient->recv_buffer.buff_len = new_buff_len;
+	return 0;
+}
+
+
+//投递接收缓存的数据到bridge中
+//-1:失败
+//ELSE 返回刷入的字节
+static int flush_recving_buff(carrier_env_t *penv , client_info_t *pclient)
+{
+	int slogd = -1;
+	bridge_package_t *ppkg = NULL;
+	int ret;
+	long long start_ms = 0;
+	long long curr_ms = 0;
+	int flush_pos = 0;
+	char *buff = NULL;
+	int total = 0;
+	int pkg_len = 0;
+
+	/***Arg Check*/
+	if(!penv || !pclient)
+		return -1;
+	if(pclient->recv_buffer.tail <= 0 || !pclient->recv_buffer.buff)
+		return 0;
+
+	/***Init*/
+	start_ms = get_curr_ms();
+	slogd = penv->slogd;
+	buff = pclient->recv_buffer.buff;
+
+	/***Flush*/
+	while(1)
+	{
+		//1.no more data
+		if(flush_pos >= pclient->recv_buffer.tail)
+		{
+			slog_log(slogd , SL_DEBUG , "<%s> flush complete!" , __FUNCTION__);
+			break;
+		}
+
+		//2.time overflow
+		curr_ms = get_curr_ms();
+		if((curr_ms - start_ms) >= 20)	//超过20ms就等待下次再刷[按照内存速度20ms大概可以copy400K]
+		{
+			slog_log(slogd , SL_DEBUG , "<%s> time overflow. waiting for next." , __FUNCTION__);
+			break;
+		}
+
+		//3.try post
+		ppkg = (bridge_package_t *)&buff[flush_pos];
+		pkg_len = GET_PACK_LEN(ppkg->pack_head.data_len);
+		ret = append_recv_channel(penv->phub , (char *)ppkg);
+		if(ret == 0)
+		{
+			total += pkg_len;
+			flush_pos += pkg_len;
+			slog_log(slogd , SL_DEBUG , "<%s> success! flushed:%d" , __FUNCTION__ , pkg_len);
+		}
+		else if(ret == -1)	//bridge error
+		{
+			slog_log(slogd , SL_ERR , "<%s> failed for bridge error!" , __FUNCTION__);
+			break;
+		}
+		else if(ret == -2) //bridge full
+		{
+			slog_log(slogd , SL_ERR , "<%s> failed for bridge full!" , __FUNCTION__);
+			break;
+		}
+
+		//continue
+	}
+
+	/***Modify*/
+	if(flush_pos > 0)	//已经发送成功过则需要移动数据到头部
+	{
+		memmove(&buff[0] , &buff[flush_pos] , pclient->recv_buffer.tail-flush_pos);
+		pclient->recv_buffer.tail = pclient->recv_buffer.tail - flush_pos;
+	}
+
+	if(pclient->recv_buffer.tail <= 0)
+	{
+		pclient->recv_buffer.tail = 0;
+		pclient->recv_buffer.delay_starts = 0;
+	}
+	/***Return*/
+	slog_log(slogd , SL_DEBUG , "<%s> flush %d and rest:%d" , __FUNCTION__ , total , pclient->recv_buffer.tail);
+	return total;
 }

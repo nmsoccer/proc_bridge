@@ -264,7 +264,7 @@ int flush_target(carrier_env_t *penv , target_detail_t *ptarget)
 		diff_ms = curr_ms-ptarget->delay_starts_ms;
 		if(diff_ms > 0)
 		{
-			ptarget->traffic.delay_time = (ptarget->traffic.delay_time * ptarget->traffic.delay_count + diff_ms) / ptarget->traffic.delay_count;
+			ptarget->traffic.delay_time = (ptarget->traffic.delay_time * ptarget->traffic.delay_count + diff_ms) / (ptarget->traffic.delay_count+1);
 			ptarget->traffic.delay_count++;
 		}
 		ptarget->delay_starts_ms = 0;
@@ -1455,6 +1455,7 @@ static int inner_send_pkg(carrier_env_t *penv , target_detail_t *ptarget , bridg
 		//upate
 		slog_log(slogd , SL_VERBOSE , "<%s> flush buff imcomplete and saved to buff success!" , __FUNCTION__);
 		ptarget->tail += stlv_len;
+		//ptarget->max_tail = ptarget->tail>ptarget->max_tail?ptarget->tail:ptarget->max_tail;
 		return 0;
 	}
 
@@ -1470,6 +1471,7 @@ static int inner_send_pkg(carrier_env_t *penv , target_detail_t *ptarget , bridg
 	//发送
 	ptarget->tail = stlv_len;
 	ptarget->delay_starts_ms = get_curr_ms();
+	//ptarget->max_tail = ptarget->tail>ptarget->max_tail?ptarget->tail:ptarget->max_tail;
 	slog_log(slogd , SL_VERBOSE , "<%s> is sending curr package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
 	ret = flush_target(penv , ptarget);
 	switch(ret)
@@ -2371,6 +2373,8 @@ static int recv_inner_proto_req(carrier_env_t *penv , client_info_t *pclient , c
 				strncpy(traffic_list.names[traffic_list.count] , ptarget->target_name , PROC_ENTRY_NAME_LEN);
 				memcpy(&traffic_list.lists[traffic_list.count] , &ptarget->traffic , sizeof(conn_traffic_t));
 				traffic_list.lists[traffic_list.count].buff_len = ptarget->buff_len;
+				traffic_list.lists[traffic_list.count].buffering = ptarget->tail;
+				traffic_list.lists[traffic_list.count].max_buffered = ptarget->max_tail;
 				traffic_list.count++;
 
 				//rotate
@@ -2401,6 +2405,9 @@ static int recv_inner_proto_req(carrier_env_t *penv , client_info_t *pclient , c
 				//traffic_list.lists[traffic_list.count].buff_len = ptarget->buff_len;
 				traffic_list.lists[traffic_list.count].type = 1;
 				traffic_list.lists[traffic_list.count].reset = -1;	//no use
+				traffic_list.lists[traffic_list.count].buff_len = pevery_client->recv_buffer.buff_len;
+				traffic_list.lists[traffic_list.count].buffering = pevery_client->recv_buffer.tail;
+				traffic_list.lists[traffic_list.count].max_buffered = pevery_client->recv_buffer.max_tail;
 				traffic_list.count++;
 
 				//rotate

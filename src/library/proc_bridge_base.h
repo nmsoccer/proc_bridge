@@ -57,7 +57,7 @@ typedef struct _bridge_package bridge_package_t;
 
 #define BRIDGE_PACK_HEAD_LEN (sizeof(bridge_package_head_t))
 #define BRIDGE_PACK_LEN	(sizeof(bridge_package_head_t) + BRIDGE_PACKAGE_DATA_LEN)
-#define GET_PACK_LEN(len) (sizeof(bridge_package_head_t) + len)
+#define GET_PACK_LEN(data_len) (sizeof(bridge_package_head_t) + data_len)
 
 /******Bridge Hub*/
 struct _bridge_hub

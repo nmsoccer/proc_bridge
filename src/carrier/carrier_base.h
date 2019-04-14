@@ -99,8 +99,11 @@ typedef struct _conn_traffic_t
 	unsigned int reset; //链接重置数
 	long latest_reset;	//最近一次重置
 	int buff_len;	//buff size
-	int delay_time;//	包滞留于缓冲区的平均时间,如果有(ms)
+	int delay_time;//	包滞留于发送缓冲区的平均时间,如果有(ms)
 	int delay_count;
+	int buffering;	//正在缓冲区里的数据
+	int max_buffered;	//缓冲区里滞留的最长数据
+	int ave_buffer;	//平均的缓冲数据长度 通过定时采样
 }conn_traffic_t;
 #define MAX_CONN_TRAFFIC_PER_PKG 50
 
@@ -119,7 +122,11 @@ typedef struct _traffic_list_t
 #define TARGET_CONN_DONE 1 //已连接
 #define TARGET_CONN_PROC 2	//正在连接
 
+
+//发送缓冲区上限为10M.因为其上游是内存下游是网络端，受到对端进程和网络性能有关，可能会造成包堆积，所以需要较大缓冲区
+//接收缓冲区上限为1M.比发送缓冲区小的原因是接收缓冲区的上游是网络下游是内存，上游应该远慢于下游处理速度，所以不易造成包堆积
 #define MAX_TARGET_BUFF_SIZE (10*1024*1024) //单个target可扩展到的最大缓冲区长度[可配置]
+#define MAX_CLIENT_BUFF_SIZE (1*1024*1024) //单个client可扩展到的最大缓冲区长度
 
 typedef struct _target_detail
 {
@@ -135,6 +142,7 @@ typedef struct _target_detail
 	int latest_send_bytes; //最近一次完成发送的长度
 	//int ready_count;		//缓冲区里待发送的包数目 只是粗略计数
 	int tail;	// tail of valid data in buff
+	int max_tail;	//max_tail in history
 	char *buff;
 	int buff_len;
 	conn_traffic_t traffic;
@@ -232,6 +240,14 @@ typedef struct _client_info
 	int tail;
 	char main_buff[BRIDGE_PACK_LEN];
 	char back_buff[BRIDGE_PACK_LEN];
+	struct
+	{
+		int buff_len;		//total buff len
+		int tail;	//recving data len
+		int max_tail;	//max in history
+		char *buff;	//暂时缓存已接收但因为业务层shm缓冲区满而未投递成功的包
+		long delay_starts;	//最早非空的时间戳
+	}recv_buffer;
 	char client_ip[64];
 	unsigned short client_port;
 	long connect_time;	//建立链接的时间
@@ -267,6 +283,27 @@ typedef struct _sending_list_t
 	sending_node_t head_node;
 }sending_list_t;
 
+/*
+ * hash_map用来快速寻址目标的fd或者proc_id
+ * [type+value]=primary key
+ */
+#define CR_HASH_ENTRY_T_FD  1 //类型为fd
+#define CR_HASH_ENTRY_T_PROCID 2 //类型为proc_id
+typedef struct _cr_hash_entry_t
+{
+	char type; //CR_HASH_ENTRY_T_XX
+	int value; //fd or proc_id
+	void *refer;
+}cr_hash_entry_t;
+
+typedef struct _cr_hash_map_t
+{
+	int len;
+	int entry_count;
+	cr_hash_entry_t *plist;
+}cr_hash_map_t;
+
+
 
 /*
  * carrier_env
@@ -293,6 +330,7 @@ typedef struct _carrier_env_t
 	}sig_map;
 	tick_list_t tick_list;
 	sending_list_t sending_list;
+	cr_hash_map_t target_hash_map;
 }carrier_env_t;
 
 
@@ -309,5 +347,9 @@ extern int append_carrier_ticker(carrier_env_t *penv , CARRIER_TICK func_tick , 
 //遍历ticker并执行
 extern int iter_time_ticker(carrier_env_t *penv);
 
+//定时回收多余内存
+//+发送缓冲区
+//+接收缓冲区
+extern int shrink_memory(void *arg);
 
 #endif /* _CARRIER_BASE_H_ */

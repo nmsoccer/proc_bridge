@@ -144,3 +144,22 @@ long long get_curr_ms()
 		return -1;
 	return ((long long)tv.tv_sec*1000)+tv.tv_usec/1000;
 }
+
+/*
+int shrink_memory(void *arg)
+{
+	carrier_env_t *penv = arg;
+	int slogd = -1;
+	static int last_target_pos = 0;
+	static int last_client_pos = 0;
+
+
+
+	if(!penv)
+		return -1;
+
+
+
+
+}*/
+

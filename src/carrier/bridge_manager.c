@@ -855,8 +855,8 @@ static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 		fprintf(penv->fp_out , "PONG\n");
 		break;
 	case CMD_PROTO_T_TRAFFIC:
-		fprintf(penv->fp_out , "%-32s %-10s %-10s %-10s %-10s %-10s %-10s %-20s %-10s %-20s %-10s %-10s\n\n" , " " , "opted" , "opting" , "max_size" , "min_size" , "ave_size" ,
-							"dropped" , "latest_drop" , "reseted" ,  "latest_reset" , "buffer" , "delay");
+		fprintf(penv->fp_out , "%-32s %-10s %-10s %-10s %-10s %-10s %-10s %-20s %-10s %-20s %-10s %-10s %-10s %-10s\n\n" , " " , "opted" , "opting" , "max_size" , "min_size" , "ave_size" ,
+							"dropped" , "latest_drop" , "reseted" ,  "latest_reset" , "delay" , "buff" , "buffing" , "max-buffed");
 		fprintf(penv->fp_out , "-----------------------------------------------------\n");
 		for(i=0; i<psub->traffic_list.count ; i++)
 		{
@@ -872,9 +872,9 @@ static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 				fprintf(penv->fp_out , ">>");
 			else
 				fprintf(penv->fp_out , "<<");
-			fprintf(penv->fp_out , "%-32s %-10u %-10u %-10u %-10u %-10u %-10u %-20s %-10u %-20s %-10d %-10d\n\n" , psub->traffic_list.names[i] ,
+			fprintf(penv->fp_out , "%-32s %-10u %-10u %-10u %-10u %-10u %-10u %-20s %-10u %-20s %-10d %-10d %-10d %-10d\n\n" , psub->traffic_list.names[i] ,
 					ptraffic->handled , ptraffic->handing , ptraffic->max_size , ptraffic->min_size , ptraffic->ave_size ,ptraffic->dropped ,buff , ptraffic->reset ,  buff2 ,
-					ptraffic->buff_len , ptraffic->delay_time);
+					ptraffic->delay_time , ptraffic->buff_len,ptraffic->buffering , ptraffic->max_buffered);
 		}
 		break;
 	default:
