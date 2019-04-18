@@ -852,7 +852,7 @@ static int print_rsp_proto(manager_cmd_rsp_t *prsp)
 	switch(psub->type)
 	{
 	case CMD_PROTO_T_PING:
-		fprintf(penv->fp_out , "PONG\n");
+		fprintf(penv->fp_out , "PONG\n----%dms\n" , psub->value);
 		break;
 	case CMD_PROTO_T_TRAFFIC:
 		fprintf(penv->fp_out , "%-32s %-10s %-10s %-10s %-10s %-10s %-10s %-20s %-10s %-20s %-10s %-10s %-10s %-10s\n\n" , " " , "opted" , "opting" , "max_size" , "min_size" , "ave_size" ,

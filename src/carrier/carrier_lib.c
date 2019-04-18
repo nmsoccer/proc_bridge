@@ -325,15 +325,34 @@ int send_carrier_msg(carrier_env_t *penv , int msg , int type , void *arg1 , voi
 /*
  * 根据proc_id获取对应的target
  */
-target_detail_t *proc_id2_target(target_info_t *ptarget_info , int proc_id)
+target_detail_t *proc_id2_target(carrier_env_t *penv , target_info_t *ptarget_info , int proc_id)
 {
 	target_detail_t *ptarget = NULL;
+	cr_hash_entry_t *pentry = NULL;
 
 	/***Arg Check*/
 	if(!ptarget_info || proc_id < 0)
 		return NULL;
 
-	/***Search*/
+	//hash search
+	if(penv)
+	{
+		//1.从hash表里获取
+		pentry = fetch_hash_entry(penv , CR_HASH_MAP_T_TARGET , CR_HASH_ENTRY_T_PROCID , proc_id);
+		if(pentry)
+		{
+			slog_log(penv->slogd , SL_DEBUG , "<%s> fetch hash success! proc_id:%d" , __FUNCTION__ , proc_id);
+			return pentry->refer;
+		}
+		//2.检查hash表是否完整
+		if(penv->target_hash_map.flag==1 && penv->target_hash_map.entry_count==penv->ptarget_info->target_count*2)
+			return NULL;
+
+		slog_log(penv->slogd , SL_DEBUG , "<%s> fetch hash not valid try to search in-line! proc_id:%d" , __FUNCTION__ , proc_id);
+	}
+
+	//line search
+	//3.否则退化到线性查找
 	ptarget = ptarget_info->head.next;
 	while(ptarget)
 	{
@@ -344,6 +363,76 @@ target_detail_t *proc_id2_target(target_info_t *ptarget_info , int proc_id)
 	}
 
 	return ptarget;
+}
+
+/*
+ * 根据fd获取对应的target
+ */
+target_detail_t *fd_2_target(carrier_env_t *penv , int fd)
+{
+	target_detail_t *ptarget = NULL;
+	cr_hash_entry_t *pentry = NULL;
+
+	if(fd <= 0)
+		return NULL;
+
+	//1.从hash表里获取
+	pentry = fetch_hash_entry(penv , CR_HASH_MAP_T_TARGET , CR_HASH_ENTRY_T_FD , fd);
+	if(pentry)
+	{
+		slog_log(penv->slogd , SL_VERBOSE , "<%s> fetch hash success! fd:%d" , __FUNCTION__ , fd);
+		return pentry->refer;
+	}
+	//2.检查hash表是否完整
+	if(penv->target_hash_map.flag==1 && penv->target_hash_map.entry_count==penv->ptarget_info->target_count*2)
+		return NULL;
+
+	//3.否则退化到线性查找
+	slog_log(penv->slogd , SL_INFO , "<%s> fetch hash not valid try to search in-line! fd:%d" , __FUNCTION__ , fd);
+	ptarget = penv->ptarget_info->head.next;
+	while(ptarget)
+	{
+		//找到正在连接状态的该fd
+		if(ptarget->fd== fd)
+		{
+			return ptarget;
+		}
+		ptarget = ptarget->next;
+	}
+
+	return NULL;
+}
+
+client_info_t *fd_2_client(carrier_env_t *penv , int fd)
+{
+	client_info_t *pclient = NULL;
+	cr_hash_entry_t *pentry = NULL;
+
+	if(fd <= 0)
+		return NULL;
+
+	//1.从hash表里获取
+	pentry = fetch_hash_entry(penv , CR_HASH_MAP_T_CLIENT , CR_HASH_ENTRY_T_FD , fd);
+	if(pentry)
+	{
+		slog_log(penv->slogd , SL_VERBOSE , "<%s> fetch hash success! fd:%d" , __FUNCTION__ , fd);
+		return pentry->refer;
+	}
+
+	//2.否则退化到线性查找
+	slog_log(penv->slogd , SL_INFO , "<%s> fetch hash not valid try to search in-line! fd:%d" , __FUNCTION__ , fd);
+	pclient = penv->pclient_list->list;
+	while(pclient)
+	{
+		//找到正在连接状态的该fd
+		if(pclient->fd == fd)
+		{
+			return pclient;
+		}
+		pclient = pclient->next;
+	}
+
+	return NULL;
 }
 
 /*
@@ -382,9 +471,11 @@ int send_inner_proto(carrier_env_t *penv , target_detail_t *ptarget , int proto 
 	switch(proto)
 	{
 	case INNER_PROTO_PING:
+		preq->data.time_ms = get_curr_ms();
 		break;
 	case INNER_PROTO_PONG:
-		strncpy(preq->data.proc_name , (char *)arg1 , sizeof(preq->data.proc_name));
+		//strncpy(preq->data.proc_name , (char *)arg1 , sizeof(preq->data.proc_name));
+		preq->data.time_ms = *(long long *)arg1;
 		break;
 	case INNER_PROTO_VERIFY_REQ:
 		strncpy(preq->arg , penv->proc_name , sizeof(preq->arg));
@@ -542,7 +633,8 @@ static int recv_inner_proto_rsp(carrier_env_t *penv , client_info_t *pclient , c
 
 		pproto_rsp->type = CMD_PROTO_T_PING;
 		pproto_rsp->result = 0;
-		strncpy(pproto_rsp->arg1 , preq->data.proc_name , sizeof(pproto_rsp->arg1));
+		pproto_rsp->value = (int)(get_curr_ms() - preq->data.time_ms);
+		strncpy(pproto_rsp->arg1 , pclient->proc_name , sizeof(pproto_rsp->arg1));
 			//send to manager
 		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
 		slog_log(slogd , SL_INFO , "<%s> append recv channel ret:%d result:%d" , __FUNCTION__ , ret , pproto_rsp->result);
@@ -1159,6 +1251,9 @@ int close_target_fd(carrier_env_t *penv , target_detail_t *ptarget , const char 
 		if(ret < 0)
 			slog_log(penv->slogd , SL_ERR , "%s del %d from epoll list from %s failed.err:%s" , __FUNCTION__ , handle_fd , reason , strerror(errno));
 	}
+
+	//del from hash
+	del_from_hash_map(penv , CR_HASH_MAP_T_TARGET , CR_HASH_ENTRY_T_FD , ptarget->fd);
 
 	close(ptarget->fd);
 	ptarget->fd = -1;
@@ -2161,7 +2256,7 @@ static int do_manage_cmd_proto(carrier_env_t *penv , manager_cmd_req_t *preq)
 			break;
 		}
 
-		ptarget = proc_id2_target(penv->ptarget_info , pitem->proc.proc_id);
+		ptarget = proc_id2_target(penv , penv->ptarget_info , pitem->proc.proc_id);
 		if(!ptarget)
 		{
 			slog_log(slogd , SL_ERR , "<%s> PING %s Target not found!" , __FUNCTION__ , psub_req->arg1);
@@ -2316,7 +2411,7 @@ static int recv_inner_proto_req(carrier_env_t *penv , client_info_t *pclient , c
 		if(!pclient->verify)
 			return -1;
 
-		ptarget_from = proc_id2_target(penv->ptarget_info , pclient->proc_id);	//get target
+		ptarget_from = proc_id2_target(penv , penv->ptarget_info , pclient->proc_id);	//get target
 		if(!ptarget_from || ptarget_from->connected!=TARGET_CONN_DONE)
 		{
 			slog_log(slogd , SL_ERR , "<%s> Connection to from-server proc:[%s:%d] may not ready!" , __FUNCTION__ , pclient->proc_name , pclient->proc_id);
@@ -2327,7 +2422,7 @@ static int recv_inner_proto_req(carrier_env_t *penv , client_info_t *pclient , c
 	switch(preq->type)
 	{
 	case INNER_PROTO_PING:
-		ret = send_inner_proto(penv , ptarget_from , INNER_PROTO_PONG , penv->proc_name , NULL);
+		ret = send_inner_proto(penv , ptarget_from , INNER_PROTO_PONG , (long long *)&preq->data.time_ms , NULL);
 	break;
 
 	case INNER_PROTO_VERIFY_REQ:

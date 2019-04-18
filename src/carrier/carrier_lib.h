@@ -100,6 +100,7 @@ typedef struct _inner_proto_t
 	union
 	{
 		char result;
+		long long time_ms;
 		char proc_name[PROC_ENTRY_NAME_LEN];
 		char verify_key[BRIDGE_PROC_CONN_VERIFY_KEY_LEN];
 		traffic_list_t traffic_list;
@@ -109,7 +110,9 @@ typedef struct _inner_proto_t
 
 /***********API***********/
 extern char *format_time_stamp(long ts);
-extern target_detail_t *proc_id2_target(target_info_t *ptarget_info , int proc_id);
+extern target_detail_t *proc_id2_target(carrier_env_t *penv , target_info_t *ptarget_info , int proc_id);
+extern target_detail_t *fd_2_target(carrier_env_t *penv , int fd);
+extern client_info_t *fd_2_client(carrier_env_t *penv , int fd);
 extern int parse_proc_info(char *proc_info , proc_entry_t *pentry , int slogd);
 extern int send_carrier_msg(carrier_env_t *penv , int msg , int type , void *arg1 , void *arg2);
 extern int send_inner_proto(carrier_env_t *penv , target_detail_t *ptarget , int proto ,  void *arg1 , void*arg2);

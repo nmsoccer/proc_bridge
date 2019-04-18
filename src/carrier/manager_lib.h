@@ -93,6 +93,7 @@ typedef struct _cmd_proto_req_t
 }cmd_proto_req_t;
 typedef struct _cmd_proto_rsp_t
 {
+	int value;
 	short type;
 	char result;
 	//char arg[MANAGER_CMD_ARG_LEN];

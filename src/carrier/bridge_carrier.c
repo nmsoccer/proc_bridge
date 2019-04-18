@@ -89,6 +89,7 @@ static int set_sock_option(int sock_fd , int send_size , int recv_size , int no_
 static int check_client_info(void *arg);
 static int check_run_statistics(void *arg);
 static int check_signal_stat(void *arg);
+static int check_hash(void *arg);
 static int recv_client_pkg(carrier_env_t *penv , client_info_t *pclient , bridge_package_t *pkg);
 static int expand_recv_buff(carrier_env_t *penv , client_info_t *pclient);
 static int flush_recving_buff(carrier_env_t *penv , client_info_t *pclient);
@@ -469,6 +470,12 @@ int main(int argc , char **argv)
 				pclient->next = client_list.list;
 				client_list.list = pclient;
 				slog_log(slogd , SL_INFO , "append socket %d[%s:%d] to client info success!" , acc_socket , pclient->client_ip , pclient->client_port);
+
+				ret = insert_hash_map(penv , CR_HASH_MAP_T_CLIENT , CR_HASH_ENTRY_T_FD , acc_socket , pclient);
+				if(ret < 0)
+					slog_log(slogd , SL_ERR , "insert (%d:%d) 0x%X to hash map failed!" , CR_HASH_ENTRY_T_FD , acc_socket , pclient);
+				else
+					slog_log(slogd , SL_INFO , "insert (%d:%d) 0x%X to hash map success!" , CR_HASH_ENTRY_T_FD , acc_socket , pclient);
 				continue;
 			}
 
@@ -481,6 +488,7 @@ int main(int argc , char **argv)
 					break;
 
 				//search target fd
+				/*
 				ptarget = target_info.head.next;
 				while(ptarget)
 				{
@@ -491,10 +499,13 @@ int main(int argc , char **argv)
 						break;
 					}
 					ptarget = ptarget->next;
-				}
+				}*/
+				ptarget = fd_2_target(penv , handle_fd);
 
 				//该fd非target fd
-				if(!is_target_sock)
+				//if(!is_target_sock)
+				//	break;
+				if(!ptarget)
 					break;
 
 				//handle
@@ -858,6 +869,7 @@ static int  connect_to_remote(void *arg)
 					//target_info.epoll_manage_in_connect++;
 					ptarget->fd = remote_socket;
 					ptarget->connected = TARGET_CONN_PROC;
+					insert_hash_map(penv , CR_HASH_MAP_T_TARGET , CR_HASH_ENTRY_T_FD , ptarget->fd , ptarget);
 				}
 			}
 			continue;
@@ -885,7 +897,7 @@ static int  connect_to_remote(void *arg)
 		ptarget->connected = TARGET_CONN_DONE;
 		ptarget->fd = remote_socket;
 		ptarget->tail = 0;
-
+		insert_hash_map(penv , CR_HASH_MAP_T_TARGET , CR_HASH_ENTRY_T_FD , ptarget->fd , ptarget);
 		//mange only
 		pitem = get_manage_item_by_id(penv , ptarget->proc_id);
 		if(pitem)
@@ -1178,12 +1190,12 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 	unsigned int pack_len = 0;
 	unsigned int value_len = 0;
 	int info;
-	int i = 0;
 	long curr_ts = time(NULL);
 	long long curr_ms = get_curr_ms();
 	int diff_ms = 0;
 
 	/***Search Client Info*/
+	/*
 	pclient = client_list.list;
 	for(i=0; i<client_list.total_count && pclient; i++)
 	{
@@ -1192,7 +1204,8 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 			break;
 		//search next
 		pclient = pclient->next;
-	}
+	}*/
+	pclient = fd_2_client(penv , fd);
 	if(!pclient)
 	{
 		slog_log(slogd , SL_ERR , "%s can not find fd:%d" , __FUNCTION__ , fd);
@@ -1650,6 +1663,13 @@ static int add_ticker(carrier_env_t *penv)
 		slog_log(slogd , SL_ERR , "<%s> add check_signal_stat failed!" , __FUNCTION__);
 		return -1;
 	}
+	ret = append_carrier_ticker(penv , check_hash , TIME_TICKER_T_CIRCLE , TICK_CHECK_HASH_MAP , "check_hash_map" ,
+					penv);
+	if(ret < 0)
+	{
+		slog_log(slogd , SL_ERR , "<%s> add check_hash failed!" , __FUNCTION__);
+		return -1;
+	}
 
 	return 0;
 }
@@ -1840,6 +1860,7 @@ static int handle_target_fd(target_detail_t *ptarget , struct epoll_event *peven
 static int free_client_info(client_info_t *pclient)
 {
 	client_info_t *pprev = NULL;
+	cr_hash_entry_t *pentry = NULL;
 	char found = 0;
 
 	if(!pclient)
@@ -1888,6 +1909,18 @@ static int free_client_info(client_info_t *pclient)
 	client_list.total_count--;
 	slog_log(slogd , SL_INFO , "%s success! client:%d[%s:%d] client_count:%d" , __FUNCTION__ , pclient->fd , pclient->client_ip ,
 			pclient->client_port , client_list.total_count);
+
+	//remove from hash
+	del_from_hash_map(penv , CR_HASH_MAP_T_CLIENT , CR_HASH_ENTRY_T_FD , pclient->fd);
+	//确保hash数据没有问题
+	pentry = fetch_hash_entry(penv , CR_HASH_MAP_T_CLIENT , CR_HASH_ENTRY_T_FD , pclient->fd);
+	if(pentry)
+	{
+		slog_log(slogd , SL_FATAL , "<%s> client hash of (%d:%d) %s is still in hash after remove!" , __FUNCTION__ , CR_HASH_ENTRY_T_FD ,
+				pclient->fd , pclient->proc_name);
+		memset(pentry , 0 , sizeof(cr_hash_entry_t));	//清空 防止误用
+	}
+
 	close(pclient->fd);
 	free(pclient);
 	return 0;
@@ -2190,6 +2223,7 @@ static int copy_target_info(target_info_t *pdst , target_info_t *psrc , char ini
 {
 	target_detail_t *ptarget = NULL;
 	target_detail_t *ptmp = NULL;
+	int ret = -1;
 	if(!pdst || !psrc)
 	{
 		slog_log(slogd , SL_ERR , "<%s> failed! src or dst null!" , __FUNCTION__);
@@ -2233,7 +2267,7 @@ static int copy_target_info(target_info_t *pdst , target_info_t *psrc , char ini
 		while(ptarget)
 		{
 			//1.在dst找对应的entry
-			ptmp = proc_id2_target(pdst , ptarget->proc_id);
+			ptmp = proc_id2_target(NULL , pdst , ptarget->proc_id);
 
 			//2.found
 			if(ptmp)
@@ -2299,7 +2333,7 @@ static int copy_target_info(target_info_t *pdst , target_info_t *psrc , char ini
 			//for-each target
 		while(ptarget)
 		{
-			if(!proc_id2_target(psrc , ptarget->proc_id))	//src 里没有这个项目
+			if(!proc_id2_target(NULL , psrc , ptarget->proc_id))	//src 里没有这个项目
 			{
 				//delete it
 				slog_log(slogd , SL_INFO , "<%s> will delete target from dst. [%s:%d]<%s:%d>" , __FUNCTION__ , ptarget->target_name ,
@@ -2330,6 +2364,8 @@ static int copy_target_info(target_info_t *pdst , target_info_t *psrc , char ini
 
 	//target地址可能发生变化 重置引用的结构
 	del_sending_list(penv);
+	clear_hash_map(penv , CR_HASH_MAP_T_TARGET);
+
 
 	//print
 	slog_log(slogd , SL_DEBUG , "=========AFTER=======");
@@ -2337,6 +2373,32 @@ static int copy_target_info(target_info_t *pdst , target_info_t *psrc , char ini
 	print_target_info(pdst);
 	slog_log(slogd , SL_DEBUG , "+++++++++SRC++++++++++");
 	print_target_info(psrc);
+
+	//重构hash
+	ret = init_target_hash_map(penv);
+	if(ret < 0)
+		slog_log(slogd , SL_ERR , "<%s> init hash failed!" , __FUNCTION__);
+	else
+	{
+		ptarget = pdst->head.next;
+		while(ptarget)
+		{
+			//proc_id
+			if(ptarget->proc_id > 0)
+				insert_hash_map(penv , CR_HASH_MAP_T_TARGET , CR_HASH_ENTRY_T_PROCID , ptarget->proc_id , ptarget);
+
+			//fd
+			if(ptarget->fd > 0)
+				insert_hash_map(penv , CR_HASH_MAP_T_TARGET , CR_HASH_ENTRY_T_FD , ptarget->fd , ptarget);
+
+			ptarget = ptarget->next;
+		}
+
+		//print hash_map
+		slog_log(slogd , SL_INFO , "!!!!rehash result!!!!");
+		dump_hash_map(penv , CR_HASH_MAP_T_TARGET);
+	}
+
 	return 0;
 }
 
@@ -2495,6 +2557,8 @@ static int check_signal_stat(void *arg)
 		if(penv->proc_id<=MANAGER_PROC_ID_MAX && penv->pmanager)
 			penv->pmanager->stat = MANAGE_STAT_BAD;
 		print_manage_info(penv);
+		clear_hash_map(penv , CR_HASH_MAP_T_TARGET);
+		clear_hash_map(penv , CR_HASH_MAP_T_CLIENT);
 		slog_close(penv->slogd);
 		exit(0);
 		return 0;
@@ -2726,4 +2790,14 @@ static int flush_recving_buff(carrier_env_t *penv , client_info_t *pclient)
 	/***Return*/
 	slog_log(slogd , SL_DEBUG , "<%s> flush %d and rest:%d" , __FUNCTION__ , total , pclient->recv_buffer.tail);
 	return total;
+}
+
+static int check_hash(void *arg)
+{
+	carrier_env_t *penv = (carrier_env_t *)arg;
+
+	//check
+	check_target_hash_map(penv);
+	check_client_hash_map(penv);
+	return 0;
 }

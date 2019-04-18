@@ -35,6 +35,7 @@ typedef struct _proc_entry_t
 #define TICK_CHECK_RUN_STATISTICS 6500
 #define TICK_CHECK_SIG_STAT 2000
 #define TICK_ITER_SENDING_LIST 1500
+#define TICK_CHECK_HASH_MAP 15000
 
 typedef int (* CARRIER_TICK) (void *arg); //return 0:single-shot; >0:next-expire-ms
 typedef struct _time_ticker_t
@@ -292,12 +293,14 @@ typedef struct _sending_list_t
 typedef struct _cr_hash_entry_t
 {
 	char type; //CR_HASH_ENTRY_T_XX
-	int value; //fd or proc_id
+	unsigned int value; //fd or proc_id
 	void *refer;
+	struct _cr_hash_entry_t *next;
 }cr_hash_entry_t;
 
 typedef struct _cr_hash_map_t
 {
+	char flag; //1:inited
 	int len;
 	int entry_count;
 	cr_hash_entry_t *plist;
@@ -331,6 +334,7 @@ typedef struct _carrier_env_t
 	tick_list_t tick_list;
 	sending_list_t sending_list;
 	cr_hash_map_t target_hash_map;
+	cr_hash_map_t client_hash_map;
 }carrier_env_t;
 
 
@@ -350,6 +354,21 @@ extern int iter_time_ticker(carrier_env_t *penv);
 //定时回收多余内存
 //+发送缓冲区
 //+接收缓冲区
-extern int shrink_memory(void *arg);
+//extern int shrink_memory(void *arg);
+
+#define CR_HASH_MAP_T_TARGET 1
+#define CR_HASH_MAP_T_CLIENT 2
+//target_hash_map
+extern int init_target_hash_map(carrier_env_t *penv);
+//client_hash_map
+extern int check_client_hash_map(carrier_env_t *penv);
+extern int check_target_hash_map(carrier_env_t *penv);
+
+extern int clear_hash_map(carrier_env_t *penv , char type);
+extern int insert_hash_map(carrier_env_t *penv , char type , char entry_type , unsigned int value , void *refer);
+extern int del_from_hash_map(carrier_env_t *penv , char type , char entry_type , unsigned int value);
+extern cr_hash_entry_t *fetch_hash_entry(carrier_env_t *penv , char type , char entry_type , unsigned int value);
+extern int dump_hash_map(carrier_env_t *penv , char type);
+
 
 #endif /* _CARRIER_BASE_H_ */
