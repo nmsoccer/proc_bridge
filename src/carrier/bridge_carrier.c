@@ -37,6 +37,7 @@
 #define DEFAULT_CFG_FILE "./carrier.cfg"	//default cfg file
 
 #define MY_LOG_NAME "carrier.log"
+#define MY_SLOG_LEVEL SL_DEBUG
 //#define INFO_NORMAL SL_DEBUG
 //#define INFO_MAIN	SL_INFO
 //#define INFO_ERR	SL_ERR
@@ -44,6 +45,7 @@ static int slogd = -1; //slog descriptor
 
 //#define MAX_SEND_COUNT	10	//每tick最多发送的包数
 #define MS_PER_TICK 100 //每tick毫秒数 100ms
+#define MS_MAT_EPOLL_WAIT 10 //100ms的tick粒度太大，只允许epoll_wait这么久的时间(在全部空闲的情况下carrier以10ms的真实tick运行)
 #define MAX_DISPATCH_BRIDGE_MS 50 //每tick最多花50毫秒来读取并发送bridge里的数据
 
 #define MAX_EPOLL_QUEUE (1024*2)
@@ -127,7 +129,9 @@ int main(int argc , char **argv)
 	//cost
 	int cost_ms = 0;
 	int reward_ms = 0;
+	int net_idle = 0;
 	int total_cost = 0;
+	int epoll_cost = 0;
 	long long start_ms = 0;
 	long long end_ms = 0;
 
@@ -135,7 +139,7 @@ int main(int argc , char **argv)
 	memset(&slog_option , 0 , sizeof(slog_option));
 	//slog_option.log_degree = SLD_MILL;
 	strncpy(slog_option.type_value._local.log_name , MY_LOG_NAME , sizeof(slog_option.type_value._local.log_name));
-	slogd = slog_open(SLT_LOCAL , SL_DEBUG , &slog_option , NULL);
+	slogd = slog_open(SLT_LOCAL , MY_SLOG_LEVEL , &slog_option , NULL);
 	if(slogd < 0)
 	{
 		printf("open slog %s failed!\n" , MY_LOG_NAME);
@@ -413,7 +417,15 @@ int main(int argc , char **argv)
 		total_cost += cost_ms;
 
 		/*epoll wait*/
-		active_fds = epoll_wait(penv->epoll_fd , ep_event_list , MAX_EPOLL_QUEUE , (MS_PER_TICK-total_cost)<=0?1:(MS_PER_TICK-total_cost));
+		/*
+		epoll_cost = MS_PER_TICK-total_cost;
+		epoll_cost = epoll_cost>MS_MAT_EPOLL_WAIT?MS_MAT_EPOLL_WAIT:epoll_cost;	//实际上100ms的tick实在太长了，我们最多允许wait MS_MAT_EPOLL_WAITms
+		epoll_cost = epoll_cost<0?1:epoll_cost;*/
+		if(net_idle<=0)
+			epoll_cost = 1;
+		else
+			epoll_cost = 1 + net_idle/1000; //每1s才会加1ms给epoll_cost
+		active_fds = epoll_wait(penv->epoll_fd , ep_event_list , MAX_EPOLL_QUEUE , epoll_cost);
 		if(active_fds < 0)
 		{
 			slog_log(slogd , SL_VERBOSE , "epoll_wait err:%s" , strerror(errno));
@@ -537,14 +549,21 @@ int main(int argc , char **argv)
 		}
 
 		//calc reward
-		if(active_fds == 0)	//等待了一个完整剩余时间，说明此段时间网络空闲，则奖励给下次dispatch多5ms
+		if(active_fds == 0)	//等待了一个完整wait时间，说明此段时间网络空闲，则奖励给下次dispatch多5ms
 		{
 			reward_ms += 5;
-			reward_ms = reward_ms>=40?40:reward_ms; //奖励最多不超过40ms.所以理论上最多有90%的时间可以用来读取bridge并分发
+			reward_ms = reward_ms>=40?40:reward_ms; //奖励最多不超过40ms.所以理论上最多有90%的时间可以用来读取bridge并分发[MAX_DISPATCH_BRIDGE_MS+reward]
+			net_idle += 1;	//网络空闲则等待多加1us最高不超MAX_EPOLL_WAIT 大概会在(sum(1,10)s)后回归到10ms的epoll_wait时间以适应交互式的通信
+			net_idle = net_idle>10000?10000:net_idle; //10000 ~= MAX_EPOLL_WAIT/0.001
+			if(net_idle%1000 == 0 && net_idle!=10000)
+				slog_log(slogd , SL_VERBOSE , "net idle incresed to %d" , net_idle);
+
 		}
-		else	//如果未等待则检查sleep时间
+		else	//如果未等待则检查sleep时间,同时网络空闲恢复初始值(epoll_wait的等待时间恢复为忙等1ms)
 		{
 			reward_ms = 0;
+			net_idle = 0;
+			slog_log(slogd , SL_VERBOSE , "net_idle reset!");
 			end_ms = get_curr_ms();
 			if((end_ms-start_ms) >= MS_PER_TICK)
 			{
@@ -552,7 +571,8 @@ int main(int argc , char **argv)
 			}
 			else
 			{
-				usleep(1000);
+				if(total_cost==0)
+					usleep(1000);
 				//usleep((end_ms-start_ms)*1000);
 			}
 		}
@@ -923,7 +943,7 @@ static int  connect_to_remote(void *arg)
 
 /*
  * 读proc发送的包到相应的fd
- * reward_ms:奖励给该函数的毫秒数.它源于上一次epoll_wait的等待时长
+ * reward_ms:奖励给该函数的毫秒数.它与上一次tick有关
  */
 static int dispatch_bridge(int reward_ms)
 {
