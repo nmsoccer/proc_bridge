@@ -22,7 +22,7 @@ A distributed inter-proc communication system
   * 安装:下载安装包文件xx.zip; unzip xx.zip; ./install.sh
       
 
-### 开发接口  
+### 开发接口(C)  
 先行说明系统提供的API接口，其中的一些名词在随后介绍.  
 * `int open_bridge(char *name_space , int proc_id , int slogd);`
   * name_space: proc_bridge系统定义的命名空间,每套proc_bridge系统需定义一个命名空间
@@ -55,7 +55,38 @@ A distributed inter-proc communication system
   * cd proc_bridge-master/src/library
   * bash ./install_lib.sh 安装开发库到/usr/local/include/proc_bridge 和 /usr/local/lib(可能需要root权限)
   
-
+### 开发接口(GO) 
+* `OpenBridge(name_space string, proc_id int, slogd int) int`
+  * name_space: proc_bridge系统定义的命名空间,每套proc_bridge系统需定义一个命名空间
+  * proc_id:进程在proc_bridge系统中的唯一整型标识
+  * slogd:打开的slog日志描述符(请看上面)
+  * return: -1:failed >=0 success,返回打开的操纵bridge描述符(句柄)  
+  
+* `CloseBridge(bd int) int`  
+  * bd:通过open_bridge返回的bridge_descriptor   
+  * return: -1:failed  0:success   
+  
+* `SendBridge(bd int, target_id int, sending_data []byte, data_len int) int`  
+  * bd:通过open_bridge返回的bridge_descriptor
+  * target_id:目标服务进程的proc_id
+  * sending_data:发送的数据
+  * data_len:发送的数据长度
+  * return: -1:错误 -2:发送区满 -3:发送区剩余空间不足 0:success  
+  
+* `RecvBridge(bd int, recv_buff []byte, recv_len int, sender *int, drop_time int) int`
+  * bd:通过open_bridge返回的bridge_descriptor
+  * recv_buff:接收缓冲区
+  * recv_len:接收缓冲区长度
+  * sender: if Not NULL 则填写发包进程的proc_id
+  * drop_time:>=0丢弃发送时间超过drop_time(秒)的包; -1:不丢弃任何包
+  * retrun: -1:错误 -2:暂无数据 -3:接收缓冲区长度不足 >0:sucess,实际接收的数据长度  
+  
+* 安装开发库(首先安装c库)
+  * 下载proc_bridge-master.zip
+  * unzip proc_bridge-master.zip
+  * cd proc_bridge-master/src/library
+  * bash ./install_lib.sh 安装开发库到/usr/local/include/proc_bridge 和 /usr/local/lib(可能需要root权限)    
+  * 将src/go-api/proc_bridge.go放到GOPATH中的库目录。比如($GOPATH/src/xx/clib/proc_bridge/ 然后go install xx/clib/proc_bridge)  
   
 ### 架构简介  
 下面以游戏服务器开发中常见的三段论，接入-逻辑-数据三层进程间通信架构举例，后续的扩展与说明均在此基础进行扩充    
