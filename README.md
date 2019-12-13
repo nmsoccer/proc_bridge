@@ -22,6 +22,7 @@ A distributed inter-proc communication system
   * 安装:下载安装包文件xx.zip; unzip xx.zip; ./install.sh
       
 
+
 ### 开发接口(C)  
 先行说明系统提供的API接口，其中的一些名词在随后介绍.  
 * `int open_bridge(char *name_space , int proc_id , int slogd);`
