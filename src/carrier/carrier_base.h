@@ -34,7 +34,7 @@ typedef struct _proc_entry_t
 #define TICK_CHECK_CLIENT_INFO 4000
 #define TICK_CHECK_RUN_STATISTICS 6500
 #define TICK_CHECK_SIG_STAT 2000
-#define TICK_ITER_SENDING_LIST 1500
+#define TICK_ITER_SENDING_LIST 500//1500
 #define TICK_CHECK_HASH_MAP 15000
 
 typedef int (* CARRIER_TICK) (void *arg); //return 0:single-shot; >0:next-expire-ms
@@ -239,8 +239,8 @@ typedef struct _client_info
 	int fd; //sock fd
 	char *buff;
 	int tail;
-	char main_buff[BRIDGE_PACK_LEN];
-	char back_buff[BRIDGE_PACK_LEN];
+	char main_buff[BRIDGE_PACK_LEN + 128];
+	char back_buff[BRIDGE_PACK_LEN + 128];
 	struct
 	{
 		int buff_len;		//total buff len
@@ -317,6 +317,7 @@ typedef struct _carrier_env_t
 	char name_space[PROC_BRIDGE_NAME_SPACE_LEN];
 	char lock_file_name[128];
 	char cfg_file_name[128];
+	char file_back_buff;	//在内存不足时进行文件缓存 理论上可以无限缓存数据
 	int proc_id;
 	int slogd;	//slog descriptor
 	int epoll_fd;

@@ -29,6 +29,7 @@
 #define MANAGER_CMD_NAME_LEN (32)
 #define MANAGER_CMD_ARG_LEN (128)
 
+#define _TRACE_DEBUG_BUFF_LEN 2046 //宏_TRACE_DEBUG的缓冲区
 /*##########DATA STRUCT##########*/
 /******Bridge Package*/
 #define BRIDGE_PACKAGE_DATA_LEN	(1024*100) //100k

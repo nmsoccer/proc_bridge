@@ -144,7 +144,8 @@ extern int print_manage_item_list(int starts , manage_item_t *item_list , int co
  * 处理来自manager tool 的包
  */
 extern int handle_manager_cmd(carrier_env_t *penv , void *preq);
-extern int append_recv_channel(bridge_hub_t *phub , char *pstpack);
+//投递网络包到本地recv共享内存
+extern int append_recv_channel(bridge_hub_t *phub , char *pstpack , int slogd);
 
 //生成校验key
 extern int gen_verify_key(carrier_env_t *penv , char *key , int key_len);

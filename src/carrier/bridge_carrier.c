@@ -137,7 +137,8 @@ int main(int argc , char **argv)
 
 	/***Open Log*/
 	memset(&slog_option , 0 , sizeof(slog_option));
-	//slog_option.log_degree = SLD_MILL;
+	slog_option.log_degree = SLD_MILL;
+	slog_option.log_size = 40*1024*1024;
 	strncpy(slog_option.type_value._local.log_name , MY_LOG_NAME , sizeof(slog_option.type_value._local.log_name));
 	slogd = slog_open(SLT_LOCAL , MY_SLOG_LEVEL , &slog_option , NULL);
 	if(slogd < 0)
@@ -663,10 +664,16 @@ static int fetch_send_channel(bridge_hub_t *phub , char *buff)
 	//int send_count;
 	int copyed = 0;
 
-	int head_pos;
+	int head_pos = 0;
+	int tail_pos = 0;
 	int channel_len;
 	int pack_len;
 	int data_len;
+
+#ifdef _TRACE_DEBUG
+	char test_buff[_TRACE_DEBUG_BUFF_LEN] = {0};
+	int result = 0;
+#endif
 
 	/***Arg Check*/
 	if(!phub ||!buff)
@@ -674,10 +681,12 @@ static int fetch_send_channel(bridge_hub_t *phub , char *buff)
 		return -1;
 	}
 
+	head_pos = phub->send_head;
+	tail_pos = phub->send_tail;
 	/***接收*/
 	//1.检查是否有数据
 	//if(phub->send_full == 0 && phub->send_head==phub->send_tail)
-	if(phub->send_head == phub->send_tail)
+	if(head_pos == tail_pos)
 	{
 		return -2;
 	}
@@ -688,7 +697,11 @@ static int fetch_send_channel(bridge_hub_t *phub , char *buff)
 	//other
 	channel_len = phub->send_buff_size;
 	pack_len = sizeof(bridge_package_t);
-	head_pos = phub->send_head;
+	//head_pos = phub->send_head;
+
+#ifdef _TRACE_DEBUG
+	slog_log(slogd , SL_DEBUG , "%s 1 [%d<-->%d]<%d>" , __FUNCTION__ , head_pos , tail_pos , channel_len);
+#endif
 
 	//2.先读取头部区
 	if((channel_len - head_pos) < pack_len)	/*余下不足头部*/
@@ -724,14 +737,81 @@ static int fetch_send_channel(bridge_hub_t *phub , char *buff)
 		head_pos %= channel_len;
 	}
 
+
 	//4.在读完该内存之后再修改位置指针，因为write会比较head指针位置.否则会出现同步错误
 	phub->sending_count--;
 	phub->send_head = head_pos;
+
+#ifdef _TRACE_DEBUG
+	result = sizeof(bridge_package_head_t) + data_len;
+	memcpy(test_buff , pstpack->pack_data , data_len);
+	slog_log(slogd , SL_DEBUG , "%s 2 [%d<-->%d](%d:%d)(%d:%d)%s" , __FUNCTION__, head_pos , tail_pos , head_pos , phub->send_head ,
+			data_len , result , test_buff);
+#endif
 	//phub->send_full = 0;
+
 	return (sizeof(bridge_package_head_t) + data_len);
 }
 
+/*
+ * try_fetch_send_head
+ * 从send_channel中获一个package的头部 但并不实质拷贝
+ * @phub:该进程打开的bridge
+ * @buff:
+ * @return:
+ * -1：错误
+ * -2：发送缓冲区空
+ * >=0：成功 并返回读取的长度
+ */
+static int try_fetch_send_head(bridge_hub_t *phub , bridge_package_t *buff)
+{
+	char *send_channel = NULL;
+	int copyed = 0;
 
+	int head_pos = 0;
+	int tail_pos = 0;
+	int channel_len;
+	int pack_len;
+
+	/***Arg Check*/
+	if(!phub ||!buff)
+	{
+		return -1;
+	}
+
+	head_pos = phub->send_head;
+	tail_pos = phub->send_tail;
+	/***接收*/
+	//1.检查是否有数据
+	if(head_pos == tail_pos)
+	{
+		return -2;
+	}
+
+	//2.获取发送区地址
+	send_channel = GET_SEND_CHANNEL(phub);
+
+	//other
+	channel_len = phub->send_buff_size;
+	pack_len = sizeof(bridge_package_t);
+
+	//2.读取头部区
+	if((channel_len - head_pos) < pack_len)	/*余下不足头部*/
+	{
+		copyed = channel_len - head_pos;
+		memcpy(buff , &send_channel[head_pos] , copyed);
+		memcpy(&buff[copyed] , &send_channel[0] , pack_len-copyed);
+		head_pos = 0 + pack_len - copyed;
+	}
+	else	/*余下可以放下下头部*/
+	{
+		memcpy(buff , &send_channel[head_pos] , pack_len);
+		head_pos += pack_len;
+		head_pos %= channel_len;
+	}
+
+	return pack_len;
+}
 
 /*
  * 将target_list的内容解析到target_info里
@@ -951,6 +1031,7 @@ static int dispatch_bridge(int reward_ms)
 	target_detail_t *ptarget = NULL;
 	conn_traffic_t *ptraffic = NULL;
 	char bridge_pack[BRIDGE_PACK_LEN];
+
 	int bridge_pack_len = 0;
 	unsigned int stlv_len = 0;
 	int ret = 0;
@@ -960,8 +1041,18 @@ static int dispatch_bridge(int reward_ms)
 	long long curr_ms = 0;
 	long long end_ms = 0;
 
+#ifdef _TRACE_DEBUG
+	char test_buff[_TRACE_DEBUG_BUFF_LEN] = {0};
+#endif
+
 	while(1)
 	{
+		//check time cost
+		curr_ms = get_curr_ms();
+		if((curr_ms - enter_ms) >= MAX_DISPATCH_BRIDGE_MS+reward_ms)	//超出每tick最大限额
+			break;
+
+		curr_ts = curr_ms/1000;
 		/**Fetch a Pack*/
 		pstpack = (bridge_package_t *)bridge_pack;
 		bridge_pack_len = fetch_send_channel(penv->phub , bridge_pack);
@@ -982,13 +1073,9 @@ static int dispatch_bridge(int reward_ms)
 			break;
 		}
 
-		curr_ms = get_curr_ms();
-		if((curr_ms - enter_ms) >= MAX_DISPATCH_BRIDGE_MS+reward_ms)	//超出每tick最大限额
-			break;
 
-		curr_ts = curr_ms/1000;
-		slog_log(slogd , SL_DEBUG , "%s fetch pack success! len:%d and target:%d ts:%lld" , __FUNCTION__ , bridge_pack_len , pstpack->pack_head.recver_id ,
-				pstpack->pack_head.send_ms);
+		//slog_log(slogd , SL_DEBUG , "%s fetch pack success! len:%d and target:%d ts:%lld content:%s" , __FUNCTION__ , bridge_pack_len , pstpack->pack_head.recver_id ,
+		//		pstpack->pack_head.send_ms , test_buff);
 		//manager获得的包都源于manager_tool 一般不作转发
 		if(penv->proc_id <= MANAGER_PROC_ID_MAX)
 		{
@@ -1050,10 +1137,17 @@ static int dispatch_bridge(int reward_ms)
 			}
 		}
 
+#ifdef _TRACE_DEBUG
+		memcpy(test_buff , &bridge_pack[sizeof(bridge_package_head_t)] , pstpack->pack_head.data_len);
+		test_buff[pstpack->pack_head.data_len] = 0;
+		slog_log(slogd , SL_DEBUG , "%s fetch pack success! len:%d and target:%d ts:%lld pre-seq:%d content:%s" , __FUNCTION__ , bridge_pack_len , pstpack->pack_head.recver_id ,
+				pstpack->pack_head.send_ms , ptraffic->handled , test_buff);
+#endif
+
 		/***Flush Target*/
 		if(ptarget->tail > 0)
 		{
-			slog_log(slogd , SL_DEBUG , "%s is sending old package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
+			slog_log(slogd , SL_DEBUG , "%s is sending remaining package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
 			ret = flush_target(penv , ptarget);
 			switch(ret)
 			{
@@ -1075,6 +1169,7 @@ static int dispatch_bridge(int reward_ms)
 		/***Send Current Pack*/
 		if(ptarget->tail > 0)	//如果缓冲区未空，则说明当前不能发送，在STLV包之后投入缓冲区
 		{
+			slog_log(slogd , SL_DEBUG , "%s target not empty! append directly!" , __FUNCTION__);
 			//剩余缓冲区空间不足则扩充缓冲区
 			if((ptarget->buff_len - ptarget->tail) < (STLV_PACK_SAFE_LEN(bridge_pack_len)))
 			{
@@ -1169,7 +1264,7 @@ static int dispatch_bridge(int reward_ms)
 		ptarget->tail = stlv_len;
 		ptarget->max_tail = ptarget->tail>ptarget->max_tail?ptarget->tail:ptarget->max_tail;
 		ptarget->delay_starts_ms = get_curr_ms();
-		slog_log(slogd , SL_INFO , "%s is sending curr package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
+		slog_log(slogd , SL_INFO , "%s is sending curr package to %d data_len:%d seq:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail , ptraffic->handled);
 		ret = flush_target(penv , ptarget);
 		switch(ret)
 		{
@@ -1213,6 +1308,10 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 	long curr_ts = time(NULL);
 	long long curr_ms = get_curr_ms();
 	int diff_ms = 0;
+
+#ifdef _TRACE_DEBUG
+	char test_buff[_TRACE_DEBUG_BUFF_LEN] = {0};
+#endif
 
 	/***Search Client Info*/
 	/*
@@ -1334,8 +1433,6 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 			//unpack success
 			pos += pack_len;
 			recv_pkg = (bridge_package_t *)pack_buff;
-			slog_log(slogd , SL_DEBUG , "%s recv an pack! value:%d pack_len:%d pos:%d tail:%d. src:%d dest:%d pkg_type:%d" , __FUNCTION__ , value_len , pack_len ,
-					pos , pclient->tail , recv_pkg->pack_head.sender_id , recv_pkg->pack_head.recver_id , recv_pkg->pack_head.pkg_type);
 
 			//check manage
 			if(recv_pkg->pack_head.pkg_type==BRIDGE_PKG_TYPE_CR_MSG)
@@ -1361,6 +1458,14 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 				free_client_info(pclient);
 				return -1;
 			}
+
+#ifdef _TRACE_DEBUG
+			memcpy(test_buff , &recv_pkg->pack_data , recv_pkg->pack_head.data_len);
+			test_buff[recv_pkg->pack_head.data_len] = 0;
+			slog_log(slogd , SL_DEBUG , "%s recv an pack! value:%d pack_len:%d pos:%d tail:%d. src:%d dest:%d pkg_type:%d seq:%d content:%s" , __FUNCTION__ , value_len , pack_len ,
+					pos , pclient->tail , recv_pkg->pack_head.sender_id , recv_pkg->pack_head.recver_id , recv_pkg->pack_head.pkg_type ,
+					pclient->traffic.handled+1 , test_buff);
+#endif
 
 			//记录业务包数据.[内部协议不进入统计]
 			pbridge_info->recv.handled++;
@@ -1390,7 +1495,7 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 			//ret = append_recv_channel(phub , pack_buff);
 			ret = recv_client_pkg(penv , pclient , (bridge_package_t *)pack_buff);
 			if(ret == 0)
-				slog_log(slogd , SL_VERBOSE , "%s >>Read From Socket and dispatch pack to Bridge success! type:%d,length:%d,src:%d,recv:%d,data_len:%d" , __FUNCTION__ , info , value_len , ((bridge_package_t*)pack_buff)->pack_head.sender_id ,
+				slog_log(slogd , SL_DEBUG , "%s >>Read From Socket and dispatch pack to Bridge success! type:%d,length:%d,src:%d,recv:%d,data_len:%d" , __FUNCTION__ , info , value_len , ((bridge_package_t*)pack_buff)->pack_head.sender_id ,
 								((bridge_package_t*)pack_buff)->pack_head.recver_id , ((bridge_package_t*)pack_buff)->pack_head.data_len);
 			else
 			{
@@ -2650,7 +2755,7 @@ static int recv_client_pkg(carrier_env_t *penv , client_info_t *pclient , bridge
 	}
 
 	/***尝试直接投递*/
-	ret = append_recv_channel(penv->phub , (char *)pkg);
+	ret = append_recv_channel(penv->phub , (char *)pkg , slogd);
 	if(ret == 0)	//成功
 		return 0;
 
@@ -2774,7 +2879,7 @@ static int flush_recving_buff(carrier_env_t *penv , client_info_t *pclient)
 		//3.try post
 		ppkg = (bridge_package_t *)&buff[flush_pos];
 		pkg_len = GET_PACK_LEN(ppkg->pack_head.data_len);
-		ret = append_recv_channel(penv->phub , (char *)ppkg);
+		ret = append_recv_channel(penv->phub , (char *)ppkg , slogd);
 		if(ret == 0)
 		{
 			total += pkg_len;
@@ -2815,9 +2920,15 @@ static int flush_recving_buff(carrier_env_t *penv , client_info_t *pclient)
 static int check_hash(void *arg)
 {
 	carrier_env_t *penv = (carrier_env_t *)arg;
-
+	static char print_circle = 0;
 	//check
-	check_target_hash_map(penv);
-	check_client_hash_map(penv);
+	if(print_circle == 0)
+	{
+		print_circle++;
+		check_target_hash_map(penv);
+		check_client_hash_map(penv);
+	}
+	if(print_circle >= 20)
+		print_circle = 0;
 	return 0;
 }

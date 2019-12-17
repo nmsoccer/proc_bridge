@@ -446,14 +446,21 @@ static int _close_bridge(bridge_hub_t *phub , int slogd)
  */
 static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_data , int len , int slogd)
 {
-	char buff[sizeof(bridge_package_head_t) + len];
+	char buff[sizeof(bridge_package_head_t)] = {0};
 	char *send_buff = NULL;
-	bridge_package_t *pstpack;
+	bridge_package_t *pstpack = NULL;
 	int empty_space = 0;
-	int send_count;
+	int send_count = 0;
+	int total_count = 0;
 	int copyed = 0;
 
+	int send_head = 0;
+	int send_tail = 0;
+
 	int tail_pos;
+#ifdef _TRACE_DEBUG
+	char test_buff[_TRACE_DEBUG_BUFF_LEN] = {0};
+#endif
 	/***Arg Check*/
 	if(!phub || target_id<= 0 || !sending_data || len<=0)
 	{
@@ -471,29 +478,30 @@ static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_da
 	}*/
 	send_buff = GET_SEND_CHANNEL(phub);
 
-	memset(buff , 0 , sizeof(buff));
+	//memset(buff , 0 , sizeof(buff));
 	//2.检查空闲空间
-	send_count = sizeof(buff);
+	total_count = sizeof(buff) + len;
+    send_head = phub->send_head;
+    send_tail = phub->send_tail;
 
 	/*tail 在head之后，则考察tail<->end + start<->head的长度*/
-	if(phub->send_tail >= phub->send_head)
+	if(send_tail >= send_head)
 	{
 		//检查空闲空间
-		empty_space = phub->send_buff_size - phub->send_tail + phub->send_head;
-
+		empty_space = phub->send_buff_size - send_tail + send_head;
 	}
 	else	/*tail在head之前，则考察tail<->head*/
 	{
-		empty_space = phub->send_head - phub->send_tail;
+		empty_space = send_head - send_tail;
 	}
-	if(empty_space-1 < send_count)	//预留1B 防止head==tail&&equeue == full
+	if(empty_space-1 < total_count)	//预留1B 防止head==tail&&equeue == full
 	{
-		slog_log(slogd , SL_ERR , "%s failed for not enough space. left space:%d pack_len:%d" , __FUNCTION__ , empty_space , send_count);
+		slog_log(slogd , SL_ERR , "%s failed for not enough space. left space:%d pack_len:%d" , __FUNCTION__ , empty_space , total_count);
 		return -3;
 	}
 	//3.COPY数据到缓冲区,最开始为头部
 	pstpack = (bridge_package_t *)buff;
-	memcpy(pstpack->pack_data , sending_data , len);
+	//memcpy(pstpack->pack_data , sending_data , len);
 
 	//pstpack->pack_head.sender_id = send_proc_id;
 	pstpack->pack_head.sender_id = phub->proc_id;
@@ -501,10 +509,11 @@ static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_da
 	pstpack->pack_head.data_len = len;
 	pstpack->pack_head.send_ms = _get_curr_ms();
 
-	//5.从buff拷贝
-	tail_pos = phub->send_tail;
+	//5.从buff拷贝头部
+	tail_pos = send_tail;
+	send_count = sizeof(buff);
 	/*tail 在head之后，则考察tail<->end + start<->head的长度*/
-	if(tail_pos >= phub->send_head)
+	if(tail_pos >= send_head)
 	{
 		//最后剩余空间足够
 		if((phub->send_buff_size - tail_pos) >= send_count)
@@ -519,6 +528,7 @@ static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_da
 			memcpy(&send_buff[tail_pos] , buff , copyed);
 			memcpy(&send_buff[0] , &buff[copyed] , send_count - copyed);
 			tail_pos = 0 + send_count - copyed;
+			slog_log(slogd , SL_DEBUG , "%s head-checkpoint![%d<-->%d](%d:%d)" , __FUNCTION__ , send_head , send_tail , tail_pos , send_count);
 		}
 
 	}
@@ -527,6 +537,35 @@ static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_da
 		memcpy(&send_buff[tail_pos] , buff , send_count);
 		tail_pos += send_count;
 	}
+
+	//copy body
+	send_count = len;
+	/*tail 在head之后，则考察tail<->end + start<->head的长度*/
+	if(tail_pos >= send_head)
+	{
+		//最后剩余空间足够
+		if((phub->send_buff_size - tail_pos) >= send_count)
+		{
+			memcpy(&send_buff[tail_pos] , sending_data , send_count);
+			tail_pos += send_count;
+			tail_pos %= phub->send_buff_size;
+		}
+		else//最后剩余空间不够
+		{
+			copyed = phub->send_buff_size - tail_pos;
+			memcpy(&send_buff[tail_pos] , sending_data , copyed);
+			memcpy(&send_buff[0] , &sending_data[copyed] , send_count - copyed);
+			tail_pos = 0 + send_count - copyed;
+			slog_log(slogd , SL_DEBUG , "%s body-checkpoint![%d<-->%d](%d:%d)" , __FUNCTION__ , send_head , send_tail , tail_pos , send_count);
+		}
+
+	}
+	else	/*tail在head之前，则考察tail<->head*/
+	{
+		memcpy(&send_buff[tail_pos] , sending_data , send_count);
+		tail_pos += send_count;
+	}
+
 
 	//6.在写完内存之后再修改tail指针，因为read会比较tail指针位置。否则会出现同步错误
 	/*这里可能会有同步错误 如果先走到226 然后断住 另一方会发现可读 然后修改send_head==send_tail 此时该进程再继续
@@ -539,8 +578,13 @@ static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_da
 	if(phub->send_head == tail_pos)
 		phub->send_full = 1;
 	*/
-	phub->send_tail = tail_pos;
 
+#ifdef _TRACE_DEBUG
+	memcpy(test_buff , sending_data , len);
+	slog_log(slogd , SL_DEBUG , "[%d<-->%d](%d:%d)%s" , send_head , send_tail , tail_pos , len , test_buff);
+#endif
+
+	phub->send_tail = tail_pos;
 	phub->sending_count++;
 
 	phub->sended_count++;
@@ -582,6 +626,11 @@ static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len
 	char should_copy = 1;
 	long curr_ts = time(NULL);
 
+#ifdef _TRACE_DEBUG
+	char test_buff[_TRACE_DEBUG_BUFF_LEN] = {0};
+	int start_read = 0;
+#endif
+
 	/***Arg Check*/
 	if(!phub ||!recv_buff)
 	{
@@ -606,6 +655,11 @@ _recv_again:
 	channel_len = phub->recv_buff_size;
 	pack_len = sizeof(bridge_package_t);
 	//head_pos = phub->recv_head;
+
+#ifdef _TRACE_DEBUG
+	slog_log(slogd , SL_DEBUG , "%s [%d<-->%d](%d:%d)" , __FUNCTION__ , head_pos , tail_pos , channel_len , pack_len);
+	start_read = head_pos;
+#endif
 
 	//2.先读取头部区
 	if((channel_len - head_pos) < pack_len)	/*余下不足头部*/
@@ -640,11 +694,10 @@ _recv_again:
 		return -3;
 	}
 
-
 	//4.读取数据
 	if((channel_len - head_pos) < data_len)	/*余下不足放数据*/
 	{
-		copyed = channel_len - phub->recv_head;
+		copyed = channel_len - head_pos;
 		if(should_copy)
 		{
 			memcpy(recv_buff , &recv_channel[head_pos] , copyed);
@@ -659,6 +712,13 @@ _recv_again:
 		head_pos += data_len;
 		head_pos %= channel_len;
 	}
+
+#ifdef _TRACE_DEBUG
+	memcpy(test_buff , recv_buff , data_len);
+	test_buff[data_len] = 0;
+	slog_log(slogd , SL_DEBUG , "%s [%d<-->%d]<%d , %d>(%d:%d)%s" , __FUNCTION__ , head_pos , tail_pos , start_read , head_pos ,
+			channel_len , data_len+pack_len , test_buff);
+#endif
 
 	//4.在读完该内存之后再修改位置指针，因为write会比较head指针位置.否则会出现同步错误
 	phub->recving_count--;

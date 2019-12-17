@@ -39,7 +39,7 @@ static int recv_inner_proto_rsp(carrier_env_t *penv , client_info_t *pclient , c
  * -2：接收缓冲区满
  * 0:success
  */
-int append_recv_channel(bridge_hub_t *phub , char *pstpack)
+int append_recv_channel(bridge_hub_t *phub , char *pstpack , int slogd)
 {
 	char *recv_channel = NULL;
 	int empty_space = 0;
@@ -48,6 +48,13 @@ int append_recv_channel(bridge_hub_t *phub , char *pstpack)
 	int tail_pos;
 	int channel_len;
 
+	int recv_tail = 0;
+	int recv_head = 0;
+
+#ifdef _TRACE_DEBUG
+	char test_buff[_TRACE_DEBUG_BUFF_LEN] = {0};
+	int start_send;
+#endif
 	/***Arg Check*/
 	if(!phub ||!pstpack)
 	{
@@ -60,29 +67,36 @@ int append_recv_channel(bridge_hub_t *phub , char *pstpack)
 	{
 		return -2;
 	}*/
+	recv_tail = phub->recv_tail;
+	recv_head = phub->recv_head;
 	recv_channel = GET_RECV_CHANNEL(phub);
 
 	//2.检查空闲空间
 	channel_len = phub->recv_buff_size;
 	send_count = sizeof(bridge_package_head_t) + ((bridge_package_t *)pstpack)->pack_head.data_len;
 
+#ifdef _TRACE_DEBUG
+	slog_log(slogd , SL_DEBUG , "%s [%d<-->%d](%d:%d)" , __FUNCTION__ , recv_head , recv_tail , channel_len , send_count);
+	start_send = recv_tail;
+#endif
+
 	/*tail 在head之后，则考察tail<->end + start<->head的长度*/
-	if(phub->recv_tail >= phub->recv_head)
+	if(recv_tail >= recv_head)
 	{
 		//检查空闲空间
-		empty_space = channel_len - phub->recv_tail + phub->recv_head;
+		empty_space = channel_len - recv_tail + recv_head;
 	}
 	else	/*tail在head之前，则考察tail<->head*/
 	{
-		empty_space = phub->recv_head - phub->recv_tail;
+		empty_space = recv_head - recv_tail;
 	}
 	if(empty_space -1 < send_count)	////预留1B 防止head==tail&&equeue == full
 		return -3;
 
 	//5.从buff拷贝
-	tail_pos = phub->recv_tail;
+	tail_pos = recv_tail;
 	/*tail 在head之后，则考察tail<->end + start<->head的长度*/
-	if(tail_pos >= phub->recv_head)
+	if(tail_pos >= recv_head)
 	{
 		//最后剩余空间足够
 		if((channel_len - tail_pos) >= send_count)
@@ -117,6 +131,13 @@ int append_recv_channel(bridge_hub_t *phub , char *pstpack)
 	if(phub->recv_head == tail_pos)
 		phub->recv_full = 1;
 	*/
+#ifdef _TRACE_DEBUG
+	memcpy(test_buff , ((bridge_package_t *)pstpack)->pack_data , ((bridge_package_t *)pstpack)->pack_head.data_len);
+	test_buff[((bridge_package_t *)pstpack)->pack_head.data_len] = 0;
+	slog_log(slogd , SL_DEBUG , "%s [%d<-->%d]<%d , %d>(%d:%d)%s" , __FUNCTION__ , recv_head , tail_pos , start_send , tail_pos ,
+			channel_len , send_count , test_buff);
+#endif
+
 	phub->recv_tail = tail_pos;
 
 	phub->recving_count++;
@@ -222,9 +243,13 @@ int flush_target(carrier_env_t *penv , target_detail_t *ptarget)
     long long curr_ms = get_curr_ms();
     int diff_ms = 0;
     int slogd = penv->slogd;
+    int should_log = 0;
+    if(ptarget->proc_id > MANAGER_PROC_ID_MAX)
+    	should_log = 1;
 
-	slog_log(slogd , SL_VERBOSE , "%s is sending package to %d. delay_start_ms:%lld" , __FUNCTION__ , ptarget->proc_id ,
-			ptarget->delay_starts_ms);
+    if(should_log)
+    	slog_log(slogd , SL_DEBUG , "%s is sending package to %d. delay_start_ms:%lld" , __FUNCTION__ , ptarget->proc_id ,
+    			ptarget->delay_starts_ms);
 
 	//send
 	ret = send(ptarget->fd ,  ptarget->buff , ptarget->tail , 0);
@@ -270,13 +295,15 @@ int flush_target(carrier_env_t *penv , target_detail_t *ptarget)
 		ptarget->delay_starts_ms = 0;
 		ptarget->latest_send_bytes = ret;
 		ptarget->latest_send_ts = (long)(curr_ms/1000);
-		slog_log(slogd , SL_VERBOSE , "%s flush all buff success! delay:%d lat_send:%d lat_ts:%ld" , __FUNCTION__ , ptarget->traffic.delay_time ,
-				ptarget->latest_send_bytes , ptarget->latest_send_ts);
+		if(should_log)
+			slog_log(slogd , SL_DEBUG , "%s flush all buff success! delay:%d lat_send:%d lat_ts:%ld" , __FUNCTION__ , ptarget->traffic.delay_time ,
+					ptarget->latest_send_bytes , ptarget->latest_send_ts);
 		return 1;
 	}
 
 	//send part of data
-	slog_log(slogd , SL_VERBOSE , "%s flush part of buff! sended:%d all:%d" , __FUNCTION__ , ret , ptarget->tail);
+	if(should_log)
+		slog_log(slogd , SL_DEBUG , "%s flush part of buff! sended:%d all:%d" , __FUNCTION__ , ret , ptarget->tail);
 	memmove(ptarget->buff , &ptarget->buff[ret] , ptarget->tail-ret);
 	ptarget->tail = ptarget->tail - ret;
 	ptarget->latest_send_bytes = ret;
@@ -636,7 +663,7 @@ static int recv_inner_proto_rsp(carrier_env_t *penv , client_info_t *pclient , c
 		pproto_rsp->value = (int)(get_curr_ms() - preq->data.time_ms);
 		strncpy(pproto_rsp->arg1 , pclient->proc_name , sizeof(pproto_rsp->arg1));
 			//send to manager
-		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
+		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg , slogd);
 		slog_log(slogd , SL_INFO , "<%s> append recv channel ret:%d result:%d" , __FUNCTION__ , ret , pproto_rsp->result);
 	break;
 
@@ -658,7 +685,7 @@ static int recv_inner_proto_rsp(carrier_env_t *penv , client_info_t *pclient , c
 		strncpy(pproto_rsp->arg2 , preq->arg , sizeof(pproto_rsp->arg2));
 		memcpy(&pproto_rsp->traffic_list , &preq->data.traffic_list , sizeof(traffic_list_t));
 			//send to manager
-		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
+		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg , slogd);
 		slog_log(slogd , SL_INFO , "<%s> append recv channel ret:%d result:%d" , __FUNCTION__ , ret , pproto_rsp->result);
 	break;
 
@@ -683,7 +710,7 @@ static int recv_inner_proto_rsp(carrier_env_t *penv , client_info_t *pclient , c
 		strncpy(pproto_rsp->arg1 , pclient->proc_name , sizeof(pproto_rsp->arg1));
 		strncpy(pproto_rsp->arg2 , preq->arg , sizeof(pproto_rsp->arg2));
 			//send to manager
-		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
+		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg , slogd);
 		slog_log(slogd , SL_INFO , "<%s> append recv channel ret:%d result:%d" , __FUNCTION__ , ret , pproto_rsp->result);
 	break;
 
@@ -1208,7 +1235,7 @@ int expand_target_buff(target_detail_t *ptarget , int slogd)
 	if(ptarget->buff_len < (1*1024*1024))	//小于1M直接扩大1倍
 		new_buff_len = ptarget->buff_len * 2;
 	else
-		new_buff_len += (1*1024*1024);	//大于1M则每次+1M
+		new_buff_len = ptarget->buff_len + (1*1024*1024);	//大于1M则每次+1M
 	new_buff = calloc(1 , new_buff_len);
 	if(!new_buff)
 	{
@@ -1904,6 +1931,7 @@ int iter_sending_node(void *arg)
 			}
 
 			//4.flush
+			slog_log(slogd , SL_DEBUG , "<%s> try to flush target buff <%s:%d>" , __FUNCTION__ , ptarget->target_name , pnode->proc_id);
 			ret = flush_target(penv , ptarget);
 			if(ret < 0)
 			{
@@ -2032,7 +2060,7 @@ static int do_manage_cmd_stat(carrier_env_t *penv , manager_cmd_req_t *preq)
 			//rotate
 			if(pstat_rsp->count >= MANAGER_STAT_MAX_ITEM)
 			{
-				ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
+				ret = append_recv_channel(penv->phub , (char *)pbridge_pkg , slogd);
 				slog_log(slogd , SL_DEBUG , "<%s> rotate append recv channel ret:%d" , __FUNCTION__ , ret);
 				//refresh
 				pstat_rsp->count = 0;
@@ -2045,7 +2073,7 @@ _final_send:
 		//send last
 		if(valid_count==0 || pstat_rsp->count>0)
 		{
-			ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
+			ret = append_recv_channel(penv->phub , (char *)pbridge_pkg , slogd);
 			slog_log(slogd , SL_DEBUG , "<%s> last append recv channel ret:%d count:%d" , __FUNCTION__ , ret , pstat_rsp->count);
 		}
 
@@ -2168,7 +2196,7 @@ static int do_manage_cmd_error(carrier_env_t *penv , manager_cmd_req_t *preq)
 		//rotate
 		if(psub_rsp->count >= MANAGER_STAT_MAX_ITEM)
 		{
-			ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
+			ret = append_recv_channel(penv->phub , (char *)pbridge_pkg , slogd);
 			slog_log(slogd , SL_DEBUG , "<%s> rotate append recv channel ret:%d" , __FUNCTION__ , ret);
 			//refresh
 			psub_rsp->count = 0;
@@ -2181,7 +2209,7 @@ _final_send:
 	//send last
 	if(valid_count==0 || psub_rsp->count>0)
 	{
-		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
+		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg , slogd);
 		slog_log(slogd , SL_DEBUG , "<%s> last append recv channel ret:%d count:%d" , __FUNCTION__ , ret , psub_rsp->count);
 	}
 	return 0;
@@ -2305,7 +2333,7 @@ static int do_manage_cmd_proto(carrier_env_t *penv , manager_cmd_req_t *preq)
 				{
 					strncpy(psub_rsp->arg1 , ptarget->target_name , sizeof(psub_rsp->arg1));
 					psub_rsp->result = -2;
-					ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
+					ret = append_recv_channel(penv->phub , (char *)pbridge_pkg , slogd);
 					slog_log(slogd , SL_DEBUG , "<%s> append recv channel ret:%d result:%d proto:traffic" , __FUNCTION__ , ret , psub_rsp->result);
 				}
 			}
@@ -2351,7 +2379,7 @@ static int do_manage_cmd_proto(carrier_env_t *penv , manager_cmd_req_t *preq)
 				{
 					strncpy(psub_rsp->arg1 , ptarget->target_name , sizeof(psub_rsp->arg1));
 					psub_rsp->result = -2;
-					ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
+					ret = append_recv_channel(penv->phub , (char *)pbridge_pkg , slogd);
 					slog_log(slogd , SL_DEBUG , "<%s> append recv channel ret:%d result:%d proto:%d" , __FUNCTION__ , ret , psub_rsp->result , psub_rsp->type);
 				}
 			}
@@ -2373,7 +2401,7 @@ static int do_manage_cmd_proto(carrier_env_t *penv , manager_cmd_req_t *preq)
 _send_back:
 	if(send_back)
 	{
-		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg);
+		ret = append_recv_channel(penv->phub , (char *)pbridge_pkg , slogd);
 		slog_log(slogd , SL_DEBUG , "<%s> append recv channel ret:%d result:%d" , __FUNCTION__ , ret , psub_rsp->result);
 	}
 
