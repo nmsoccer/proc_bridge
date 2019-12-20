@@ -13,11 +13,16 @@
 #include <fcntl.h>
 #include <slog/slog.h>
 
+//一个bridge系统所能支撑的最多节点数目 实际应小于单机的MAX(port)=65535
+//该字段也用于控制发送位图标记已标明是否某管道已满
+#define MAX_PROC_BRIDGE_SCALE 80000
+
 #define PROC_BRIDGE_NAME_SPACE_LEN 128	//name space len
 #define BRIDGE_PROC_NAME_LEN 64 //proc_name len
 #define BRIDGE_PROC_CONN_VERIFY_KEY_LEN 64	//链接验证码长度
 
 #define PROC_BRIDGE_HIDDEN_DIR_FORMAT "/tmp/.proc_bridge.%s"
+
 
 #define MANAGER_PROC_ID_MIN 1	//保留给manager的proc_id min
 #define MANAGER_PROC_ID_MAX 1000	//保留给manager的proc_id max
@@ -82,6 +87,7 @@ struct _bridge_hub
 	int  recv_tail;	/*recv队列尾，用于写数据*/
 	int recv_head;	/*recv队列头，用于读数据*/
 
+	char snd_bitmap[MAX_PROC_BRIDGE_SCALE/8]; /*发送通道的位图 用于向上级进程标记是否该通道已满*/
 	/*缓冲区起始地址*/
 	char all_buff[0];
 }__attribute__((packed));

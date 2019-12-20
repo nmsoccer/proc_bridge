@@ -8,6 +8,13 @@
 #ifndef _CARRIER_BASE_H_
 #define _CARRIER_BASE_H_
 
+
+//发送缓冲区上限为10M.因为其上游是内存下游是网络端，受到对端进程和网络性能有关，可能会造成包堆积，所以需要较大缓冲区
+//该字段已经改进为carrier_env.max_expand_size根据发送总长度自动调整
+//接收缓冲区上限为1M.比发送缓冲区小的原因是接收缓冲区的上游是网络下游是内存，上游应该远慢于下游处理速度，所以不易造成包堆积
+//#define MAX_TARGET_BUFF_SIZE (10*1024*1024) //单个target可扩展到的最大缓冲区长度[可配置]
+#define MAX_CLIENT_BUFF_SIZE (1*1024*1024) //单个client可扩展到的最大缓冲区长度
+//#define SND_BIT_MAP_ALERT  (500*1024) //在通道可扩展缓冲区到达上限时，剩余空间不足该参数时进行send_bit_map置位(一般应大于package_len防止丢包)
 /*********DATA STRUCT*/
 /*
  * proc_entry
@@ -124,11 +131,6 @@ typedef struct _traffic_list_t
 #define TARGET_CONN_PROC 2	//正在连接
 
 
-//发送缓冲区上限为10M.因为其上游是内存下游是网络端，受到对端进程和网络性能有关，可能会造成包堆积，所以需要较大缓冲区
-//接收缓冲区上限为1M.比发送缓冲区小的原因是接收缓冲区的上游是网络下游是内存，上游应该远慢于下游处理速度，所以不易造成包堆积
-#define MAX_TARGET_BUFF_SIZE (10*1024*1024) //单个target可扩展到的最大缓冲区长度[可配置]
-#define MAX_CLIENT_BUFF_SIZE (1*1024*1024) //单个client可扩展到的最大缓冲区长度
-
 typedef struct _target_detail
 {
 	char connected;	/*是否已经链接*/
@@ -147,6 +149,7 @@ typedef struct _target_detail
 	char *buff;
 	int buff_len;
 	conn_traffic_t traffic;
+	char snd_block; //发送阻塞
 }target_detail_t;
 
 typedef struct _target_
@@ -336,6 +339,8 @@ typedef struct _carrier_env_t
 	sending_list_t sending_list;
 	cr_hash_map_t target_hash_map;
 	cr_hash_map_t client_hash_map;
+	unsigned int max_expand_size;	//单channel最大可扩充的发送缓冲区上限(2*phub->send_size)
+	unsigned int block_snd_size; //阻塞单个channel继续发送的条件(phub->send_size) 这两个字段都是为了保证缓冲区充裕,防止丢包
 }carrier_env_t;
 
 

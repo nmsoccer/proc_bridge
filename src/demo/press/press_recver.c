@@ -92,6 +92,7 @@ int main(int argc , char **argv)
 		return 0;
 	}
 	printf("try to test press using:%s and pkg-size:%d\n" , output_file , pkg_size);
+	slog_log(sld , SL_DEBUG , "try to test press using:%s and pkg-size:%d" , output_file , pkg_size);
 
 	//open sld
 	memset(&log_option , 0 , sizeof(log_option));
@@ -168,6 +169,7 @@ int main(int argc , char **argv)
 		{
 			gettimeofday(&tv , NULL);
 			printf("started:%lu:%lu\n" , tv.tv_sec , tv.tv_usec);
+			slog_log(sld , SL_DEBUG , "started:%lu:%lu" , tv.tv_sec , tv.tv_usec);
 			start_ts = tv.tv_sec*100 + tv.tv_usec/10000;
 		}
 		//recv
@@ -185,19 +187,22 @@ int main(int argc , char **argv)
 		}
 		recv_times++;
 		//printf("[%d] %d\n" , recv_times , recv_index);
-		if(recv_times % 50 == 0)
+		if(recv_times % 200 == 0)
 			write(1 , "." , 1);
-		slog_log(sld , SL_DEBUG , "[%d]<%d>(%d)" , recv_times , recv_index , ret);
+		//slog_log(sld , SL_DEBUG , "[%d]<%d>(%d)" , recv_times , recv_index , ret);
 	}
 
 	//result
 	gettimeofday(&tv , NULL);
 	printf("ended:%lu:%lu\n" , tv.tv_sec , tv.tv_usec);
 	printf("recv_times:%d sleep_times:%d\n" , recv_times , sleep_times);
+	slog_log(sld , SL_DEBUG , "ended:%lu:%lu recv_times:%d sleep_times:%d" , tv.tv_sec , tv.tv_usec , recv_times , sleep_times);
 	end_ts = tv.tv_sec*100 + tv.tv_usec/10000;
 	if(end_ts != start_ts)
+	{
 		printf("cost:%ld ms qps:%ld per 10ms\n" , (end_ts-start_ts)*10 , recv_times/(end_ts-start_ts));
-
+		slog_log(sld , SL_DEBUG , "cost:%ld ms qps:%ld per 10ms" , (end_ts-start_ts)*10 , recv_times/(end_ts-start_ts));
+	}
 	fflush(stdout);
 
 	write(fd , file_buff , file_size);

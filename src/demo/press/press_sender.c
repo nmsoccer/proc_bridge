@@ -149,6 +149,7 @@ int main(int argc , char **argv)
 	//send
 	gettimeofday(&tv , NULL);
 	printf("started:%lu:%lu\n" , tv.tv_sec , tv.tv_usec);
+	slog_log(sld , SL_DEBUG , "started:%lu:%lu" , tv.tv_sec , tv.tv_usec);
 	start_ts = tv.tv_sec*100 + tv.tv_usec/10000;
 	while(1)
 	{
@@ -186,9 +187,13 @@ int main(int argc , char **argv)
 	gettimeofday(&tv , NULL);
 	printf("ended:%lu:%lu\n" , tv.tv_sec , tv.tv_usec);
 	printf("send_times:%d sleep_times:%d\n" , send_times , sleep_times);
+	slog_log(sld , SL_DEBUG , "ended:%lu:%lu send_times:%d sleep_times:%d" , tv.tv_sec , tv.tv_usec , send_times , sleep_times);
 	end_ts = tv.tv_sec*100 + tv.tv_usec/10000;
 	if(end_ts != start_ts)
+	{
 		printf("cost:%ldms qps:%ld per 10ms\n" , (end_ts-start_ts)*10 , send_times/(end_ts-start_ts));
+		slog_log(sld  ,SL_DEBUG , "cost:%ldms qps:%ld per 10ms" , (end_ts-start_ts)*10 , send_times/(end_ts-start_ts));
+	}
 
 	free(file_buff);
 	close(fd);

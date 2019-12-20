@@ -46,6 +46,7 @@ static int _recv_from_bridge(bridge_hub_t *phub , char *recv_buff , int recv_len
 static int _close_bridge(bridge_hub_t *phub , int slogd);
 //get curr ms
 static long long _get_curr_ms();
+static int get_snd_bit(bridge_hub_t *phub , int id , int sld);
 /****************END****************/
 
 /*
@@ -240,9 +241,18 @@ int send_to_bridge(int bd , int target_id , char *sending_data , int len)
 	/***Check Space*/
 	if(pspace->opened_id != bd)
 	{
-		//slog_log(slogd , SL_ERR , "<%s> failed! descriptor not match! %d != %d" , __FUNCTION__ , pspace->opened_id , bd);
+		slog_log(pspace->slogd , SL_ERR , "<%s> failed! descriptor not match! %d != %d" , __FUNCTION__ , pspace->opened_id , bd);
 		return -1;
 	}
+
+	//check len
+	/*
+	if(len > BRIDGE_PACKAGE_DATA_LEN)
+	{
+		slog_log(pspace->slogd , SL_ERR , "<%s> failed! data len:%d is bigger than predefined package-data-len:%d" , __FUNCTION__ , len , BRIDGE_PACKAGE_DATA_LEN);
+		return -1;
+	}*/
+
 
 	return _send_to_bridge(pspace->phub , target_id , sending_data , len , pspace->slogd);
 }
@@ -469,13 +479,13 @@ static int _send_to_bridge(bridge_hub_t *phub , int target_id , char *sending_da
 	}
 
 	/***发送*/
-	//1.检查发送区是否满
-	/*
-	if(phub->send_full == 1)
+	//1.检查发送位图是否允许发送
+	if(get_snd_bit(phub , target_id , slogd) != 0)
 	{
-		slog_log(slogd , SL_ERR , "%s failed for send_buff full!" , __FUNCTION__);
-		return -2;
-	}*/
+		slog_log(slogd , SL_ERR , "%s failed! snd_bit_map is set! not allowed to send pkg yet!" , __FUNCTION__ );
+		return -3;
+	}
+
 	send_buff = GET_SEND_CHANNEL(phub);
 
 	//memset(buff , 0 , sizeof(buff));
@@ -826,4 +836,29 @@ static long long _get_curr_ms()
 	if(ret < 0)
 		return -1;
 	return ((long long)tv.tv_sec*1000)+tv.tv_usec/1000;
+}
+
+//get snd bitmap
+static int get_snd_bit(bridge_hub_t *phub , int id , int sld)
+{
+	if(!phub)
+		return -1;
+
+	char *bmap = phub->snd_bitmap;
+	int len = sizeof(phub->snd_bitmap);
+	int byte_seq = 0;
+	int bit_seq = 0;
+	char v = 1;
+
+	//[0 , len*8-1]
+	if(id >= len*8)
+	{
+		slog_log(sld , SL_ERR , "%s id too big! id:%d\n" , __FUNCTION__ , id);
+		return -1;
+	}
+
+	byte_seq = id / 8;
+	bit_seq = id % 8;
+	v = bmap[byte_seq] & (v << bit_seq);
+	return (v>0)?1:0;
 }

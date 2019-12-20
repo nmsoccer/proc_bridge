@@ -152,7 +152,7 @@ extern int gen_verify_key(carrier_env_t *penv , char *key , int key_len);
 //校验key
 extern int do_verify_key(carrier_env_t *penv , char *key , int  key_len);
 //扩展发送缓冲区
-extern int expand_target_buff(target_detail_t *ptarget , int slogd);
+extern int expand_target_buff(carrier_env_t *penv , target_detail_t *ptarget);
 //关闭target
 extern int close_target_fd(carrier_env_t *penv , target_detail_t *ptarget , const char *reason , int epoll_fd , char del_from_epoll);
 //正发送节点

@@ -291,7 +291,10 @@ int main(int argc , char **argv)
 	//penv->phub = phub;
 	memset(penv->phub->proc_name , 0 , strlen(penv->phub->proc_name));
 	strncpy(penv->phub->proc_name , penv->proc_name , sizeof(penv->phub->proc_name));
-	slog_log(slogd, SL_INFO , "Main:open bridge success!");
+	memset(penv->phub->snd_bitmap , 0 , sizeof(penv->phub->snd_bitmap));	//重新拉起之后对控制位图清零
+	penv->max_expand_size = penv->phub->send_buff_size * 2 + (1024*1024);
+	penv->block_snd_size = penv->phub->send_buff_size + (1024*1024);
+	slog_log(slogd, SL_INFO , "Main:open bridge success! max_expand_size:%ld block_size:%ld" , penv->max_expand_size , penv->block_snd_size);
 
 		//print
 	print_target_info(&target_info);
@@ -416,6 +419,13 @@ int main(int argc , char **argv)
 		cost_ms = dispatch_bridge(reward_ms);
 		//slog_log(penv->slogd , SL_VERBOSE , "main:dispatch_bridge:cost:%ld" , cost_ms);
 		total_cost += cost_ms;
+
+		/*如果取包消耗为0则进行-主动推送*/
+		if(total_cost == 0)
+		{
+			cost_ms = iter_sending_node(penv);
+			total_cost += cost_ms;
+		}
 
 		/*epoll wait*/
 		/*
@@ -1030,7 +1040,7 @@ static int dispatch_bridge(int reward_ms)
 	bridge_package_t *pstpack;
 	target_detail_t *ptarget = NULL;
 	conn_traffic_t *ptraffic = NULL;
-	char bridge_pack[BRIDGE_PACK_LEN];
+	char bridge_pack[BRIDGE_PACK_LEN*2];
 
 	int bridge_pack_len = 0;
 	unsigned int stlv_len = 0;
@@ -1125,7 +1135,7 @@ static int dispatch_bridge(int reward_ms)
 		/***Init*/
 		if(!ptarget->buff || ptarget->buff_len==0)
 		{
-			ret = expand_target_buff(ptarget , penv->slogd);
+			ret = expand_target_buff(penv , ptarget);
 			if(ret < 0)
 			{
 				slog_log(slogd , SL_ERR , "%s init send_buff to [%s:%d] failed!" , __FUNCTION__ , ptarget->target_name , ptarget->proc_id);
@@ -1170,10 +1180,11 @@ static int dispatch_bridge(int reward_ms)
 		if(ptarget->tail > 0)	//如果缓冲区未空，则说明当前不能发送，在STLV包之后投入缓冲区
 		{
 			slog_log(slogd , SL_DEBUG , "%s target not empty! append directly!" , __FUNCTION__);
+
 			//剩余缓冲区空间不足则扩充缓冲区
 			if((ptarget->buff_len - ptarget->tail) < (STLV_PACK_SAFE_LEN(bridge_pack_len)))
 			{
-				ret = expand_target_buff(ptarget , penv->slogd);
+				ret = expand_target_buff(penv , ptarget);
 				if(ret < 0)
 				{
 					slog_log(slogd , SL_ERR , "%s expand target failed! drop package. flush buff imcomplete. but target buff left space is too small! left:%d proper:%d" ,
