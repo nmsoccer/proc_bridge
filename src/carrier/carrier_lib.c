@@ -18,6 +18,8 @@
 #include "carrier_base.h"
 
 extern int errno;
+
+
 static int send_msg_event(carrier_env_t *penv , int type , void *arg1 , void *arg2);
 static int send_msg_error(carrier_env_t *penv , int type ,  void *arg1 , void *arg2);
 static int filt_manager_proc_id(target_info_t *ptarget_info , target_detail_t *manager[] , int len);
@@ -31,6 +33,8 @@ static int recv_inner_proto_req(carrier_env_t *penv , client_info_t *pclient , c
 static int recv_inner_proto_rsp(carrier_env_t *penv , client_info_t *pclient , char *package);
 static int set_snd_bit(bridge_hub_t *phub , int id , int sld);
 static int clr_snd_bit(bridge_hub_t *phub , int id , int sld);
+static int flush_target_1(carrier_env_t *penv , target_detail_t *ptarget);
+static int flush_target_2(carrier_env_t *penv , target_detail_t *ptarget);
 /*
  * append_recv_channel
  * 添加一个package到recv_channel里
@@ -237,7 +241,8 @@ int parse_proc_info(char *proc_info , proc_entry_t *pentry , int slogd)
  *  1:发送全部
  *  2:发送部分字节
  */
-int flush_target(carrier_env_t *penv , target_detail_t *ptarget)
+/*
+int flush_target_old(carrier_env_t *penv , target_detail_t *ptarget)
 {
 	int ret = 0;
 	int result = 0;
@@ -358,6 +363,160 @@ int flush_target(carrier_env_t *penv , target_detail_t *ptarget)
 
 	return 2;
 }
+*/
+
+
+
+/*
+ * 清空某个channel的target发送缓冲区
+ * -1:错误
+ *  0:未发送
+ *  1:发送全部
+ *  2:发送部分字节
+ */
+int flush_target(carrier_env_t *penv , target_detail_t *ptarget)
+{
+
+    int slogd = penv->slogd;
+
+    //check type
+    if(ptarget->snd_head == ptarget->snd_tail)
+    {
+    	slog_log(slogd , SL_ERR , "%s empty buff!" , __FUNCTION__); //should not happen here.
+    	return 1;
+    }
+
+    if(ptarget->snd_head < ptarget->snd_tail)
+    	return flush_target_1(penv , ptarget);
+
+
+   return flush_target_2(penv , ptarget);
+}
+
+/*
+ * 将数据写入target
+ * return:
+ * 0 :success
+ * -1:failed
+ * arg no check
+ */
+
+int pkg_2_target(carrier_env_t *penv , target_detail_t *ptarget , char *pkg , int pkg_len)
+{
+	int stlv_len = 0;
+	int stlv_pre_len = 0;	//预计的包长
+	int slogd = penv->slogd;
+	int copy = 0;
+	char stlv_buff[BRIDGE_PACK_LEN  + 64];
+
+	//check len
+	stlv_pre_len = STLV_PACK_SAFE_LEN(pkg_len);
+	if(TARGET_EMPTY_SPACE(ptarget) < stlv_pre_len)
+	{
+		slog_log(slogd , SL_ERR , "<%s> failed! space not enough! %d vs %d" , __FUNCTION__ , TARGET_EMPTY_SPACE(ptarget) , stlv_pre_len);
+		return -1;
+	}
+
+	//pack
+	//slog_log(slogd , SL_DEBUG , "%s before [%ld<->%ld](%ld:%d:%d)" , __FUNCTION__ , ptarget->snd_head , ptarget->snd_tail , ptarget->snd_buff_len, stlv_pre_len , pkg_len);
+	//一般情况下直接打包到缓冲区上，除了特殊的尾部不够才需要先压到stlv_buff中这样减少二次copy
+	if(ptarget->snd_tail < ptarget->snd_head)
+	{
+		stlv_len = STLV_PACK_ARRAY(&ptarget->snd_buff[ptarget->snd_tail] , pkg , pkg_len);
+		if(stlv_len == 0)
+			return -1;
+		ptarget->snd_tail += stlv_len;
+	}
+	else
+	{
+		if((ptarget->snd_buff_len-ptarget->snd_tail) >= stlv_pre_len)
+		{
+			stlv_len = STLV_PACK_ARRAY(&ptarget->snd_buff[ptarget->snd_tail] , pkg , pkg_len);
+			if(stlv_len == 0)
+				return -1;
+			ptarget->snd_tail += stlv_len;
+			ptarget->snd_tail %= ptarget->snd_buff_len;
+		}
+		else	//这里需要先压缩到缓冲区
+		{
+			stlv_len = STLV_PACK_ARRAY(stlv_buff , pkg , pkg_len);
+			if(stlv_len == 0)
+				return -1;
+
+			copy = ((ptarget->snd_buff_len-ptarget->snd_tail)>=stlv_len)?(stlv_len):(ptarget->snd_buff_len-ptarget->snd_tail);
+			memcpy(&ptarget->snd_buff[ptarget->snd_tail] , stlv_buff , copy);
+			ptarget->snd_tail += copy;
+			ptarget->snd_tail %= ptarget->snd_buff_len;
+
+			//continue
+			if(copy < stlv_len)
+			{
+				slog_log(slogd , SL_DEBUG , "%s head append!" , __FUNCTION__);
+				memcpy(&ptarget->snd_buff[ptarget->snd_tail] , &stlv_buff[copy] , stlv_len-copy);
+				ptarget->snd_tail += (stlv_len-copy);
+				ptarget->snd_tail %= ptarget->snd_buff_len;
+			}
+		}
+	}
+	//slog_log(slogd , SL_DEBUG , "%s after [%ld<->%ld](%ld:%d)" , __FUNCTION__ , ptarget->snd_head , ptarget->snd_tail , ptarget->snd_buff_len, stlv_len);
+
+	//upate
+	return 0;
+}
+
+
+/*
+int pkg_2_target(carrier_env_t *penv , target_detail_t *ptarget , char *pkg , int pkg_len)
+{
+	int stlv_len = 0;
+	int slogd = penv->slogd;
+	int copy = 0;
+	char stlv_buff[BRIDGE_PACK_LEN  + 64];
+
+	//pack
+	stlv_len = STLV_PACK_ARRAY(stlv_buff , pkg , pkg_len);
+	if(stlv_len == 0)
+	{
+		slog_log(slogd , SL_ERR , "<%s> flush buff imcomplete and drop package for stlv pack failed!" , __FUNCTION__);
+		return -1;
+	}
+
+	//check len
+	if(TARGET_EMPTY_SPACE(ptarget) < stlv_len)
+	{
+		slog_log(slogd , SL_ERR , "<%s> failed! space not enough! %d vs %d" , __FUNCTION__ , TARGET_EMPTY_SPACE(ptarget) , stlv_len);
+		return -1;
+	}
+
+	//copy
+	//slog_log(slogd , SL_VERBOSE , "%s before [%ld<->%ld](%ld:%d)" , __FUNCTION__ , ptarget->snd_head , ptarget->snd_tail , ptarget->snd_buff_len, stlv_len);
+	if(ptarget->snd_tail < ptarget->snd_head)
+	{
+		memcpy(&ptarget->snd_buff[ptarget->snd_tail] , stlv_buff , stlv_len);
+		ptarget->snd_tail += stlv_len;
+	}
+	else
+	{
+		copy = ((ptarget->snd_buff_len-ptarget->snd_tail)>=stlv_len)?(stlv_len):(ptarget->snd_buff_len-ptarget->snd_tail);
+		memcpy(&ptarget->snd_buff[ptarget->snd_tail] , stlv_buff , copy);
+		ptarget->snd_tail += copy;
+		ptarget->snd_tail %= ptarget->snd_buff_len;
+
+		//continue
+		if(copy < stlv_len)
+		{
+			slog_log(slogd , SL_DEBUG , "%s head append!" , __FUNCTION__);
+			memcpy(&ptarget->snd_buff[ptarget->snd_tail] , &stlv_buff[copy] , stlv_len-copy);
+			ptarget->snd_tail += (stlv_len-copy);
+			ptarget->snd_tail %= ptarget->snd_buff_len;
+		}
+	}
+	//slog_log(slogd , SL_VERBOSE , "%s after [%ld<->%ld](%ld:%d)" , __FUNCTION__ , ptarget->snd_head , ptarget->snd_tail , ptarget->snd_buff_len, stlv_len);
+
+	//upate
+	return 0;
+}
+*/
 
 /*
  *向manager发送carrier消息
@@ -1243,50 +1402,52 @@ int do_verify_key(carrier_env_t *penv , char *key , int  key_len)
 int expand_target_buff(carrier_env_t *penv , target_detail_t *ptarget)
 {
 	char *new_buff = NULL;
-	int new_buff_len = 0;
+	unsigned long new_buff_len = 0;
 	int slogd = -1;
 	int remain = 0;
+	unsigned should_copy = 0;
 	/***Arg Check*/
 	if(!penv || !ptarget)
 		return -1;
 
 	slogd = penv->slogd;
 	/***Set New Buff Len*/
-	if(ptarget->buff_len >= penv->max_expand_size)
+	if(ptarget->snd_buff_len >= penv->max_expand_size)
 	{
-		slog_log(slogd , SL_ERR , "<%s> failed! buff_len reaches max:%d!" , __FUNCTION__ , ptarget->buff_len);
+		slog_log(slogd , SL_INFO , "<%s> failed! buff_len reaches max:%d!" , __FUNCTION__ , ptarget->snd_buff_len);
 		return -1;
 	}
 
 	/***Try Init*/
-	if(ptarget->buff_len == 0)
+	if(ptarget->snd_buff_len == 0)
 	{
 		new_buff_len = BRIDGE_PACK_LEN * 2;	//default 2 max-pkg size
-		if(ptarget->buff)	//should not happen
+		if(ptarget->snd_buff)	//should not happen
 		{
-			slog_log(slogd , SL_FATAL , "<%s> buff_len=0 but buff is set:0x%X! will clear ori buff" , __FUNCTION__ , ptarget->buff);
-			free(ptarget->buff);
-			ptarget->buff = NULL;
+			slog_log(slogd , SL_FATAL , "<%s> buff_len=0 but buff is set:0x%X! will clear ori buff" , __FUNCTION__ , ptarget->snd_buff);
+			free(ptarget->snd_buff);
+			ptarget->snd_buff = NULL;
 		}
-		ptarget->buff = calloc(1 , new_buff_len);
-		if(!ptarget->buff)
+		ptarget->snd_buff = calloc(1 , new_buff_len);
+		if(!ptarget->snd_buff)
 		{
-			slog_log(slogd , SL_ERR , "<%s> failed! new_buff:%d old_buff:%d" , __FUNCTION__ , new_buff_len , ptarget->buff_len);
+			slog_log(slogd , SL_ERR , "<%s> failed! new_buff:%ld old_buff:%ld" , __FUNCTION__ , new_buff_len , ptarget->snd_buff_len);
 			return -1;
 		}
 
 		//success
-		slog_log(slogd , SL_INFO , "<%s> success! new_buff:%d old_buff:%d target:[%s:%d]" , __FUNCTION__ , new_buff_len , ptarget->buff_len ,
+		slog_log(slogd , SL_INFO , "<%s> success! new_buff:%d old_buff:%d target:[%s:%d]" , __FUNCTION__ , new_buff_len , ptarget->snd_buff_len ,
 				ptarget->target_name , ptarget->proc_id);
-		ptarget->buff_len = new_buff_len;
+		ptarget->snd_buff_len = new_buff_len;
+		ptarget->snd_head = ptarget->snd_tail = 0;
 		return 0;
 	}
 
 	/***Alloc New*/
-	if(ptarget->buff_len < (1*1024*1024))	//小于1M直接扩大1倍
-		new_buff_len = ptarget->buff_len * 2;
+	if(ptarget->snd_buff_len < (1*1024*1024))	//小于1M直接扩大1倍
+		new_buff_len = ptarget->snd_buff_len * 2;
 	else
-		new_buff_len = ptarget->buff_len + (1*1024*1024);	//大于1M则每次+1M
+		new_buff_len = ptarget->snd_buff_len + (1*1024*1024);	//大于1M则每次+1M
 	//如果扩到最大长度 需要预留足够多的空间来容纳缓存数据
 	if(new_buff_len >= penv->max_expand_size)
 	{
@@ -1294,7 +1455,7 @@ int expand_target_buff(carrier_env_t *penv , target_detail_t *ptarget)
 		{
 			remain = penv->block_snd_size - (new_buff_len - penv->max_expand_size);
 			new_buff_len += remain;
-			slog_log(slogd , SL_INFO , "%s to %d reached max expand size! will resize new_buff from %d-->%d" , __FUNCTION__ , ptarget->proc_id ,
+			slog_log(slogd , SL_INFO , "%s to %d reached max expand size! will resize new_buff from %ld-->%ld" , __FUNCTION__ , ptarget->proc_id ,
 					new_buff_len-remain , new_buff_len);
 		}
 	}
@@ -1302,25 +1463,48 @@ int expand_target_buff(carrier_env_t *penv , target_detail_t *ptarget)
 	new_buff = calloc(1 , new_buff_len);
 	if(!new_buff)
 	{
-		slog_log(slogd , SL_ERR , "<%s> failed! new_buff:%d old_buff:%d" , __FUNCTION__ , new_buff_len , ptarget->buff_len);
+		slog_log(slogd , SL_ERR , "<%s> failed! new_buff:%ld old_buff:%ld" , __FUNCTION__ , new_buff_len , ptarget->snd_buff_len);
 		return -1;
 	}
 
-	/***Try Copy*/
-	slog_log(slogd , SL_INFO , "<%s> success! new_buff:%d old_buff:%d target:[%s:%d]" , __FUNCTION__ , new_buff_len , ptarget->buff_len ,
+	/***Copy*/
+	slog_log(slogd , SL_INFO , "<%s> success! new_buff:%ld old_buff:%ld target:[%s:%d]" , __FUNCTION__ , new_buff_len , ptarget->snd_buff_len ,
 					ptarget->target_name , ptarget->proc_id);
-	if(!ptarget->buff) //should not happen
+	if(!ptarget->snd_buff) //should not happen
 	{
 
-		ptarget->buff = new_buff;
-		ptarget->buff_len = new_buff_len;
+		ptarget->snd_buff = new_buff;
+		ptarget->snd_buff_len = new_buff_len;
+		ptarget->snd_head = ptarget->snd_tail = 0;
 		return 0;
 	}
 
-	memcpy(new_buff , ptarget->buff , ptarget->tail);
-	free(ptarget->buff);
-	ptarget->buff = new_buff;
-	ptarget->buff_len = new_buff_len;
+	//memcpy(new_buff , ptarget->buff , ptarget->tail);
+	slog_log(slogd , SL_INFO , "<%s> before copy [%ld-%ld](%ld)" , __FUNCTION__ , ptarget->snd_head , ptarget->snd_tail , ptarget->snd_buff_len);
+	if(ptarget->snd_head < ptarget->snd_tail)
+	{
+		should_copy = ptarget->snd_tail-ptarget->snd_head;
+		memcpy(new_buff , &ptarget->snd_buff[ptarget->snd_head] , should_copy);
+		ptarget->snd_head = 0;
+		ptarget->snd_tail = should_copy;
+	}
+	else if(ptarget->snd_head > ptarget->snd_tail)
+	{
+		should_copy = ptarget->snd_buff_len - ptarget->snd_head;
+		memcpy(new_buff , &ptarget->snd_buff[ptarget->snd_head] , should_copy);
+		memcpy(&new_buff[should_copy] , &ptarget->snd_buff[0] , ptarget->snd_tail);
+		ptarget->snd_head = 0;
+		ptarget->snd_tail = should_copy + ptarget->snd_tail;
+	}
+	else //empty nothing
+	{
+		//nothing
+	}
+
+	free(ptarget->snd_buff);
+	ptarget->snd_buff = new_buff;
+	ptarget->snd_buff_len = new_buff_len;
+	slog_log(slogd , SL_INFO , "<%s> after copy [%ld-%ld](%ld)" , __FUNCTION__ , ptarget->snd_head , ptarget->snd_tail , ptarget->snd_buff_len);
 	return 0;
 }
 
@@ -1348,10 +1532,10 @@ int close_target_fd(carrier_env_t *penv , target_detail_t *ptarget , const char 
 	close(ptarget->fd);
 	ptarget->fd = -1;
 	ptarget->connected = TARGET_CONN_NONE;
-	if(ptarget->buff)
-		free(ptarget->buff);
-	ptarget->buff = NULL;
-	ptarget->buff_len = ptarget->tail = 0;
+	if(ptarget->snd_buff)
+		free(ptarget->snd_buff);
+	ptarget->snd_buff = NULL;
+	ptarget->snd_buff_len = ptarget->snd_head = ptarget->snd_tail = 0;
 
 	penv->bridge_info.send.reset_connect++;
 	penv->bridge_info.send.latest_reset = curr_ts;
@@ -1572,7 +1756,6 @@ static int filt_manager_proc_id(target_info_t *ptarget_info , target_detail_t *m
 static int inner_send_pkg(carrier_env_t *penv , target_detail_t *ptarget , bridge_package_t *ppkg , int pkg_len , int slogd)
 {
 	int ret = -1;
-	unsigned int stlv_len = 0;
 
 	/***Arg Check*/
 	if(!ptarget || !ppkg)
@@ -1583,7 +1766,7 @@ static int inner_send_pkg(carrier_env_t *penv , target_detail_t *ptarget , bridg
 		return -1;
 	}
 	/***Check Init*/
-	if(ptarget->buff_len==0 || !ptarget->buff)
+	if(ptarget->snd_buff_len==0 || !ptarget->snd_buff)
 	{
 		ret = expand_target_buff(penv , ptarget);
 		if(ret < 0)
@@ -1594,9 +1777,9 @@ static int inner_send_pkg(carrier_env_t *penv , target_detail_t *ptarget , bridg
 	}
 
 	/***Try Flush Target*/
-	if(ptarget->tail > 0)
+	if(!TARGET_IS_EMPTY(ptarget))
 	{
-		slog_log(slogd , SL_VERBOSE , "%s is sending old package to %d. data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
+		slog_log(slogd , SL_VERBOSE , "%s is sending old package to %d. data_len:%d" , __FUNCTION__ , ptarget->proc_id ,TARGET_DATA_LEN(ptarget));
 		ret = flush_target(penv , ptarget);
 		switch(ret)
 		{
@@ -1616,49 +1799,43 @@ static int inner_send_pkg(carrier_env_t *penv , target_detail_t *ptarget , bridg
 
 	/***Send Current Pack*/
 	//1.如果缓冲区未空，则说明当前不能发送，在STLV包之后投入缓冲区
-	if(ptarget->tail > 0)
+	if(!TARGET_IS_EMPTY(ptarget))
 	{
 		//剩余缓冲区空间不足则扩展缓冲区
-		if((ptarget->buff_len - ptarget->tail) < (STLV_PACK_SAFE_LEN(pkg_len)))
+		if(TARGET_EMPTY_SPACE(ptarget) < (STLV_PACK_SAFE_LEN(pkg_len)))
 		{
 			ret = expand_target_buff(penv , ptarget);
 			if(ret < 0)
 			{
 				slog_log(slogd , SL_ERR , "<%s> drop package. flush buff imcomplete. but target buff left space is too small! left:%d proper:%d" ,
-						__FUNCTION__ , ptarget->buff_len - ptarget->tail , STLV_PACK_SAFE_LEN(pkg_len));
+						__FUNCTION__ , TARGET_EMPTY_SPACE(ptarget) , STLV_PACK_SAFE_LEN(pkg_len));
 				return -1;
 			}
 		}
 
 		//pack
-		stlv_len = STLV_PACK_ARRAY(&ptarget->buff[ptarget->tail] , ppkg , pkg_len);
-		if(stlv_len == 0)
+		ret = pkg_2_target(penv , ptarget , (char *)ppkg , pkg_len);
+		if(ret != 0)
 		{
 			slog_log(slogd , SL_ERR , "<%s> flush buff imcomplete and drop package for stlv pack failed!" , __FUNCTION__);
 			return -1;
 		}
 
-		//upate
 		slog_log(slogd , SL_VERBOSE , "<%s> flush buff imcomplete and saved to buff success!" , __FUNCTION__);
-		ptarget->tail += stlv_len;
-		//ptarget->max_tail = ptarget->tail>ptarget->max_tail?ptarget->tail:ptarget->max_tail;
 		return 0;
 	}
 
 	//2.缓冲区已空，或可发送
-	//打包
-	stlv_len = STLV_PACK_ARRAY(ptarget->buff , ppkg , pkg_len);
-	if(stlv_len == 0)
+	ret = pkg_2_target(penv , ptarget , (char *)ppkg , pkg_len);
+	if(ret != 0)
 	{
-		slog_log(slogd , SL_ERR , "<%s> drop package for stlv pack failed!" , __FUNCTION__);
+		slog_log(slogd , SL_ERR , "<%s> drop package for pkg2target failed , although buff empty!" , __FUNCTION__);
 		return -1;
 	}
 
-	//发送
-	ptarget->tail = stlv_len;
 	ptarget->delay_starts_ms = get_curr_ms();
 	//ptarget->max_tail = ptarget->tail>ptarget->max_tail?ptarget->tail:ptarget->max_tail;
-	slog_log(slogd , SL_VERBOSE , "<%s> is sending curr package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
+	slog_log(slogd , SL_VERBOSE , "<%s> is sending curr package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,TARGET_DATA_LEN(ptarget));
 	ret = flush_target(penv , ptarget);
 	switch(ret)
 	{
@@ -1991,7 +2168,7 @@ int iter_sending_node(void *arg)
 			}
 
 			//3.节点已无数据
-			if(ptarget->tail == 0)
+			if(TARGET_IS_EMPTY(ptarget))
 			{
 				slog_log(slogd , SL_DEBUG , "<%s> detect buff <%s:%d> empty!" , __FUNCTION__ , ptarget->target_name , pnode->proc_id);
 				del_sending_node(penv , ptarget);
@@ -2625,8 +2802,8 @@ static int recv_inner_proto_req(carrier_env_t *penv , client_info_t *pclient , c
 				found = 1;
 				strncpy(traffic_list.names[traffic_list.count] , ptarget->target_name , PROC_ENTRY_NAME_LEN);
 				memcpy(&traffic_list.lists[traffic_list.count] , &ptarget->traffic , sizeof(conn_traffic_t));
-				traffic_list.lists[traffic_list.count].buff_len = ptarget->buff_len;
-				traffic_list.lists[traffic_list.count].buffering = ptarget->tail;
+				traffic_list.lists[traffic_list.count].buff_len = ptarget->snd_buff_len;
+				traffic_list.lists[traffic_list.count].buffering = TARGET_DATA_LEN(ptarget);
 				traffic_list.lists[traffic_list.count].max_buffered = ptarget->max_tail;
 				traffic_list.count++;
 
@@ -2735,4 +2912,368 @@ static int recv_inner_proto_req(carrier_env_t *penv , client_info_t *pclient , c
 	}
 
 	return 0;
+}
+
+/*
+ * 清空某个channel的target发送缓冲区[1次]
+ * [head , tail]
+ * -1:错误
+ *  0:未发送
+ *  1:发送全部
+ *  2:发送部分字节
+ */
+static int flush_target_1(carrier_env_t *penv , target_detail_t *ptarget)
+{
+	int ret = 0;
+	int result = 0;
+	//ptarget is non-null
+    long long curr_ms = get_curr_ms();
+    int diff_ms = 0;
+    int slogd = penv->slogd;
+    int should_log = 0;
+    unsigned long should_send = 0;
+    unsigned long empty_size = 0;
+    if(ptarget->proc_id > MANAGER_PROC_ID_MAX)
+    	should_log = 1;
+
+
+	//send
+    should_send = ptarget->snd_tail-ptarget->snd_head;
+    empty_size = ptarget->snd_buff_len-ptarget->snd_tail + ptarget->snd_head;
+	ret = send(ptarget->fd ,  &ptarget->snd_buff[ptarget->snd_head] , should_send , 0);
+
+	if(should_log)
+		slog_log(slogd , SL_VERBOSE , "%s is sending package to %d. delay_start_ms:%lld [%ld-%ld] total:%ld empty:%ld" , __FUNCTION__ , ptarget->proc_id ,
+	    			ptarget->delay_starts_ms , ptarget->snd_head , ptarget->snd_tail , ptarget->snd_buff_len , empty_size);
+
+	//send failed
+	if(ret < 0)
+	{
+		switch(errno)
+		{
+		case EAGAIN:	//socket发送缓冲区满，稍后再试
+		//case EWOULDBLOCK:
+			slog_log(slogd , SL_DEBUG , "%s send failed for socket buff full!" , __FUNCTION__);
+			//检查是否到达缓冲区上限及触发封锁水位
+			if(ptarget->snd_buff_len >= penv->max_expand_size)
+			{
+				if((empty_size <= penv->block_snd_size) && !ptarget->snd_block)
+				{
+					slog_log(slogd , SL_INFO , "%s will block snd channel temprary! target_id:%d space:%lu" , __FUNCTION__ , ptarget->proc_id ,
+							empty_size);
+					set_snd_bit(penv->phub , ptarget->proc_id , slogd);
+					ptarget->snd_block = 1;
+				}
+			}
+				//检查网络阻塞 距离上一次成功发包已经过去了10s 同时
+			if((curr_ms/1000 - ptarget->latest_send_ts) > 10)
+			{
+				slog_log(slogd , SL_ERR , "%s connection to [%s:%d]<%s:%d> block more than 10s，will reset again!" , __FUNCTION__ ,
+						ptarget->target_name , ptarget->proc_id , ptarget->ip_addr , ptarget->port);
+				//result = -1;
+				result = 0;	//不用关闭了
+			}
+			else
+			{
+				result = 0;
+			}
+		break;
+		default:
+			slog_log(slogd , SL_ERR , "%s send failed for err:%s. and will reset connection." , __FUNCTION__ , strerror(errno));
+			//此时出现错误，应主动关闭链接，用于清除本端和对端的缓冲区数据，防止错误包雪崩。并在后续进行重连
+			result = -1;
+		break;
+		}
+
+		return result;
+	}
+
+	//send all of data
+	if(ret == should_send)
+	{
+		ptarget->snd_head = ptarget->snd_tail;
+		diff_ms = curr_ms-ptarget->delay_starts_ms;
+		if(diff_ms > 0)
+		{
+			ptarget->traffic.delay_time = (ptarget->traffic.delay_time * ptarget->traffic.delay_count + diff_ms) / (ptarget->traffic.delay_count+1);
+			ptarget->traffic.delay_count++;
+		}
+		ptarget->delay_starts_ms = 0;
+		ptarget->latest_send_bytes = ret;
+		ptarget->latest_send_ts = (long)(curr_ms/1000);
+		if(should_log)
+			slog_log(slogd , SL_VERBOSE , "%s flush all buff success! delay:%d lat_send:%d lat_ts:%ld" , __FUNCTION__ , ptarget->traffic.delay_time ,
+					ptarget->latest_send_bytes , ptarget->latest_send_ts);
+
+		if(ptarget->snd_block)
+		{
+			slog_log(slogd , SL_INFO , "%s flush all! unlock snd channel! target_id:%d" , __FUNCTION__ , ptarget->proc_id);
+			clr_snd_bit(penv->phub , ptarget->proc_id , slogd);
+			ptarget->snd_block = 0;
+		}
+		return 1;
+	}
+
+	//send part of data
+	if(should_log)
+		slog_log(slogd , SL_VERBOSE , "%s flush part of buff! sended:%d all:%lu" , __FUNCTION__ , ret , should_send);
+	ptarget->snd_head += ret;
+	empty_size += ret;
+	ptarget->latest_send_bytes = ret;
+	ptarget->latest_send_ts = (long)(curr_ms/1000);
+
+	//check snd block
+	if(ptarget->snd_buff_len >= penv->max_expand_size)
+	{
+		if(!ptarget->snd_block)	//try block
+		{
+			if(empty_size <= penv->block_snd_size)
+			{
+				slog_log(slogd , SL_INFO , "%s send part of data! will block snd channel temprary! target_id:%d space:%lu" , __FUNCTION__ , ptarget->proc_id ,
+						empty_size);
+				set_snd_bit(penv->phub , ptarget->proc_id , slogd);
+				ptarget->snd_block = 1;
+			}
+		}
+		else	//try unlock
+		{
+			if(empty_size >= penv->block_snd_size)
+			{
+				slog_log(slogd , SL_INFO , "%s send part of data! empty enough,will unlock snd channel! target_id:%d space:%lu" , __FUNCTION__ , ptarget->proc_id ,
+						empty_size);
+				clr_snd_bit(penv->phub , ptarget->proc_id , slogd);
+				ptarget->snd_block = 0;
+			}
+		}
+	}
+
+	return 2;
+}
+
+/*
+ * 清空某个channel的target发送缓冲区[2次]
+ * [head->buff_end]+[buff_start , tail]
+ * -1:错误
+ *  0:未发送
+ *  1:发送全部
+ *  2:发送部分字节
+ */
+static int flush_target_2(carrier_env_t *penv , target_detail_t *ptarget)
+{
+	int ret = 0;
+	int result = 0;
+    long long curr_ms = get_curr_ms();
+    int diff_ms = 0;
+    int slogd = penv->slogd;
+    int should_log = 0;
+    unsigned long should_send = 0;
+    unsigned long empty_size = 0;
+    unsigned long sended = 0;
+    if(ptarget->proc_id > MANAGER_PROC_ID_MAX)
+    	should_log = 1;
+
+    /*STEP 1*/
+	//send
+    should_send = ptarget->snd_buff_len-ptarget->snd_head;
+    empty_size = ptarget->snd_head - ptarget->snd_tail;
+	ret = send(ptarget->fd ,  &ptarget->snd_buff[ptarget->snd_head] , should_send , 0);
+
+	if(should_log)
+	{
+		slog_log(slogd , SL_DEBUG , "%s 1st is sending package to %d. delay_start_ms:%lld [%ld-%ld] total:%ld empty:%ld" , __FUNCTION__ , ptarget->proc_id ,
+		 ptarget->delay_starts_ms , ptarget->snd_head , ptarget->snd_tail , ptarget->snd_buff_len , empty_size);
+	}
+	//send failed
+	if(ret < 0)
+	{
+		switch(errno)
+		{
+		case EAGAIN:	//socket发送缓冲区满，稍后再试
+		//case EWOULDBLOCK:
+			slog_log(slogd , SL_INFO , "%s 1st send failed for socket buff full!" , __FUNCTION__);
+			//检查是否到达缓冲区上限及触发封锁水位
+			if(ptarget->snd_buff_len >= penv->max_expand_size)
+			{
+				if((empty_size <= penv->block_snd_size) && !ptarget->snd_block)
+				{
+					slog_log(slogd , SL_INFO , "%s 1st will block snd channel temprary! target_id:%d space:%lu" , __FUNCTION__ , ptarget->proc_id ,
+							empty_size);
+					set_snd_bit(penv->phub , ptarget->proc_id , slogd);
+					ptarget->snd_block = 1;
+				}
+			}
+				//检查网络阻塞 距离上一次成功发包已经过去了10s 同时
+			if((curr_ms/1000 - ptarget->latest_send_ts) > 10)
+			{
+				slog_log(slogd , SL_ERR , "%s 1st connection to [%s:%d]<%s:%d> block more than 10s，will reset again!" , __FUNCTION__ ,
+						ptarget->target_name , ptarget->proc_id , ptarget->ip_addr , ptarget->port);
+				//result = -1;
+				result = 0;
+			}
+			else
+				result = 0;
+		break;
+		default:
+			slog_log(slogd , SL_ERR , "%s 1st send failed for err:%s. and will reset connection." , __FUNCTION__ , strerror(errno));
+			//此时出现错误，应主动关闭链接，用于清除本端和对端的缓冲区数据，防止错误包雪崩。并在后续进行重连
+			result = -1;
+		break;
+		}
+
+		return result;
+	}
+
+	//send all of data
+	if(ret == should_send)
+	{
+		ptarget->snd_head = 0;
+		sended = ret;
+		ptarget->latest_send_bytes = ret;
+		ptarget->latest_send_ts = (long)(curr_ms/1000);
+		if(should_log)
+			slog_log(slogd , SL_DEBUG , "%s 1st flush success! delay:%d lat_send:%d lat_ts:%ld" , __FUNCTION__ , ptarget->traffic.delay_time ,
+					ptarget->latest_send_bytes , ptarget->latest_send_ts);
+
+		goto _send2;
+	}
+
+	//send part of data
+	if(should_log)
+		slog_log(slogd , SL_DEBUG , "%s 1st flush part of buff! sended:%d all:%lu" , __FUNCTION__ , ret , should_send);
+	ptarget->snd_head += ret;
+	empty_size += ret;
+	ptarget->latest_send_bytes = ret;
+	ptarget->latest_send_ts = (long)(curr_ms/1000);
+
+	//check snd block
+	if(ptarget->snd_buff_len >= penv->max_expand_size)
+	{
+		if(!ptarget->snd_block)	//try block
+		{
+			if(empty_size <= penv->block_snd_size)
+			{
+				slog_log(slogd , SL_INFO , "%s 1st send part of data! will block snd channel temprary! target_id:%d space:%lu" , __FUNCTION__ , ptarget->proc_id ,
+						empty_size);
+				set_snd_bit(penv->phub , ptarget->proc_id , slogd);
+				ptarget->snd_block = 1;
+			}
+		}
+		else	//try unlock
+		{
+			if(empty_size >= penv->block_snd_size)
+			{
+				slog_log(slogd , SL_INFO , "%s 1st send part of data! empty enough,will unlock snd channel! target_id:%d space:%lu" , __FUNCTION__ , ptarget->proc_id ,
+						empty_size);
+				clr_snd_bit(penv->phub , ptarget->proc_id , slogd);
+				ptarget->snd_block = 0;
+			}
+		}
+	}
+	return 2;
+
+
+_send2:
+	//send
+	ptarget->snd_head = 0;
+	should_send = ptarget->snd_tail;
+	empty_size = ptarget->snd_buff_len-ptarget->snd_tail;
+
+	if(should_log)
+	{
+		slog_log(slogd , SL_DEBUG , "%s 2nd is sending package to %d. delay_start_ms:%lld [%ld-%ld] total:%ld empty:%ld" , __FUNCTION__ , ptarget->proc_id ,
+		 ptarget->delay_starts_ms , ptarget->snd_head , ptarget->snd_tail , ptarget->snd_buff_len , empty_size);
+	}
+	ret = send(ptarget->fd ,  &ptarget->snd_buff[ptarget->snd_head] , should_send , 0);
+
+	//send failed
+	if(ret < 0)
+	{
+		switch(errno)
+		{
+		case EAGAIN:	//socket发送缓冲区满，稍后再试
+			//case EWOULDBLOCK:
+			slog_log(slogd , SL_INFO , "%s 2nd send failed for socket buff full!" , __FUNCTION__);
+			//检查是否到达缓冲区上限及触发封锁水位
+			if(ptarget->snd_buff_len >= penv->max_expand_size)
+			{
+				if((empty_size <= penv->block_snd_size) && !ptarget->snd_block)
+				{
+					slog_log(slogd , SL_INFO , "%s 2nd will block snd channel temprary! target_id:%d space:%lu" , __FUNCTION__ , ptarget->proc_id ,
+							empty_size);
+					set_snd_bit(penv->phub , ptarget->proc_id , slogd);
+					ptarget->snd_block = 1;
+				}
+			}
+			result = 2;	//step 1 is already send bytes!
+			break;
+		default:
+			slog_log(slogd , SL_ERR , "%s 2nd send failed for err:%s. and will reset connection." , __FUNCTION__ , strerror(errno));
+			//此时出现错误，应主动关闭链接，用于清除本端和对端的缓冲区数据，防止错误包雪崩。并在后续进行重连
+			result = -1;
+			break;
+		}
+
+		return result;
+	}
+
+	//send all of data
+	if(ret == should_send)
+	{
+		ptarget->snd_head = ptarget->snd_tail;
+		diff_ms = curr_ms-ptarget->delay_starts_ms;
+		if(diff_ms > 0)
+		{
+			ptarget->traffic.delay_time = (ptarget->traffic.delay_time * ptarget->traffic.delay_count + diff_ms) / (ptarget->traffic.delay_count+1);
+			ptarget->traffic.delay_count++;
+		}
+		ptarget->delay_starts_ms = 0;
+		ptarget->latest_send_bytes = ret + sended;
+		ptarget->latest_send_ts = (long)(curr_ms/1000);
+		if(should_log)
+			slog_log(slogd , SL_DEBUG , "%s 2nd flush all buff success! delay:%d lat_send:%d lat_ts:%ld" , __FUNCTION__ , ptarget->traffic.delay_time ,
+					ptarget->latest_send_bytes , ptarget->latest_send_ts);
+
+		if(ptarget->snd_block)
+		{
+			slog_log(slogd , SL_INFO , "%s 2nd flush all! unlock snd channel! target_id:%d" , __FUNCTION__ , ptarget->proc_id);
+			clr_snd_bit(penv->phub , ptarget->proc_id , slogd);
+			ptarget->snd_block = 0;
+		}
+		return 1;
+	}
+
+	//send part of data
+	if(should_log)
+		slog_log(slogd , SL_DEBUG , "%s 2nd flush part of buff! sended:%d all:%lu" , __FUNCTION__ , ret , should_send);
+	ptarget->snd_head += ret;
+	empty_size += ret;
+	ptarget->latest_send_bytes = ret + sended;
+	ptarget->latest_send_ts = (long)(curr_ms/1000);
+
+	//check snd block
+	if(ptarget->snd_buff_len >= penv->max_expand_size)
+	{
+		if(!ptarget->snd_block)	//try block
+		{
+			if(empty_size <= penv->block_snd_size)
+			{
+				slog_log(slogd , SL_INFO , "%s 2nd send part of data! will block snd channel temprary! target_id:%d space:%lu" , __FUNCTION__ , ptarget->proc_id ,
+						empty_size);
+				set_snd_bit(penv->phub , ptarget->proc_id , slogd);
+				ptarget->snd_block = 1;
+			}
+		}
+		else	//try unlock
+		{
+			if(empty_size >= penv->block_snd_size)
+			{
+				slog_log(slogd , SL_INFO , "%s 2nd send part of data! empty enough,will unlock snd channel! target_id:%d space:%lu" , __FUNCTION__ , ptarget->proc_id ,
+						empty_size);
+				clr_snd_bit(penv->phub , ptarget->proc_id , slogd);
+				ptarget->snd_block = 0;
+			}
+		}
+	}
+
+	return 2;
 }

@@ -121,6 +121,7 @@ int main(int argc , char **argv)
 	}
 	file_size = file_stat.st_size;
 	printf("%s size:%d\n" , input_file , file_size);
+	slog_log(sld , SL_DEBUG , "try to test press using:%s and pkg-size:%d file_size:%d\n" , input_file , pkg_size , file_size);
 
 	//read file
 	file_buff = (char *)calloc(1 , file_stat.st_size+4);
@@ -165,7 +166,8 @@ int main(int argc , char **argv)
 		{
 			slog_log(sld , SL_DEBUG , "send error:%d" , ret);
 			sleep_times++;
-			usleep(sleep_degree * 10000);	//sleep sleep_degree * 10ms 防止发送过快导致缓存不足从而丢包
+			//usleep(sleep_degree * 10000);	//sleep sleep_degree * 10ms 防止发送过快导致缓存不足从而丢包
+			usleep(10000);
 			sleep_degree++;
 			slog_log(sld , SL_DEBUG , "sleep_degree:%d\n" , sleep_degree);
 			continue;

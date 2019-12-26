@@ -12,6 +12,12 @@
 #include "carrier_base.h"
 
 
+#define TARGET_DATA_LEN(p) ((p->snd_head<=p->snd_tail)?(p->snd_tail-p->snd_head):(p->snd_buff_len-p->snd_head+p->snd_tail))
+//empty space len (sub 1byte)
+#define TARGET_EMPTY_SPACE(p) ((p->snd_head<=p->snd_tail)?(p->snd_buff_len-p->snd_tail+p->snd_head-1):(p->snd_head-p->snd_tail-1))
+#define TARGET_IS_EMPTY(p) (p->snd_head==p->snd_tail)
+
+
 /*
  * carrier_msg
  */
@@ -161,5 +167,7 @@ extern int del_sending_node(carrier_env_t *penv , target_detail_t *ptarget);
 //遍历sending node
 extern int iter_sending_node(void *arg);
 extern int del_sending_list(carrier_env_t *penv);
+//将数据放入target
+extern int pkg_2_target(carrier_env_t *penv , target_detail_t *ptarget , char *pkg , int pkg_len);
 
 #endif /* CARRIER_LIB_H_*/

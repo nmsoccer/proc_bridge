@@ -15,6 +15,8 @@
 //#define MAX_TARGET_BUFF_SIZE (10*1024*1024) //单个target可扩展到的最大缓冲区长度[可配置]
 #define MAX_CLIENT_BUFF_SIZE (1*1024*1024) //单个client可扩展到的最大缓冲区长度
 //#define SND_BIT_MAP_ALERT  (500*1024) //在通道可扩展缓冲区到达上限时，剩余空间不足该参数时进行send_bit_map置位(一般应大于package_len防止丢包)
+
+#define MAX_CHECK_SUM_BYTES 64 //发送时最多进行checksum校验的字节数目
 /*********DATA STRUCT*/
 /*
  * proc_entry
@@ -144,12 +146,18 @@ typedef struct _target_detail
 	long latest_send_ts;	//最近一次完成数据发送的时间戳
 	int latest_send_bytes; //最近一次完成发送的长度
 	//int ready_count;		//缓冲区里待发送的包数目 只是粗略计数
-	int tail;	// tail of valid data in buff
-	int max_tail;	//max_tail in history
-	char *buff;
-	int buff_len;
+	//int tail;	// tail of valid data in buff
+	int max_tail;	//max resident data in history
+	//char *buff;
+	//int buff_len;
 	conn_traffic_t traffic;
 	char snd_block; //发送阻塞
+	//循环缓冲区
+	unsigned long snd_buff_len;	//缓冲区大小
+	unsigned long snd_head; //缓冲区头
+	unsigned long snd_tail;	//缓冲区尾
+	char *snd_buff;
+
 }target_detail_t;
 
 typedef struct _target_

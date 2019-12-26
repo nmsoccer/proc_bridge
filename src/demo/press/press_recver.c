@@ -92,7 +92,6 @@ int main(int argc , char **argv)
 		return 0;
 	}
 	printf("try to test press using:%s and pkg-size:%d\n" , output_file , pkg_size);
-	slog_log(sld , SL_DEBUG , "try to test press using:%s and pkg-size:%d" , output_file , pkg_size);
 
 	//open sld
 	memset(&log_option , 0 , sizeof(log_option));
@@ -105,6 +104,7 @@ int main(int argc , char **argv)
 		printf("open %s failed!\n" , slog_name);
 		return 0;
 	}
+	slog_log(sld , SL_DEBUG , "try to test press using:%s and pkg-size:%d file_size:%d" , output_file , pkg_size , file_size);
 
 	//open file
 	//为了避免文件IO造成的损失 先存内存再写
@@ -187,8 +187,10 @@ int main(int argc , char **argv)
 		}
 		recv_times++;
 		//printf("[%d] %d\n" , recv_times , recv_index);
-		if(recv_times % 200 == 0)
-			write(1 , "." , 1);
+		if(recv_times % 500 == 0)
+		{
+			//write(1 , "." , 1);
+		}
 		//slog_log(sld , SL_DEBUG , "[%d]<%d>(%d)" , recv_times , recv_index , ret);
 	}
 

@@ -278,6 +278,9 @@ int main(int argc , char **argv)
 		return -1;
 	}
 
+	//设置stlv
+	STLV_CHECK_SUM_SIZE(MAX_CHECK_SUM_BYTES);
+
 	/***打开bridge*/
 	ret = open_bridge(penv->name_space , penv->proc_id , slogd);
 	penv->phub = bd2bridge(ret);
@@ -1006,7 +1009,8 @@ static int  connect_to_remote(void *arg)
 
 		ptarget->connected = TARGET_CONN_DONE;
 		ptarget->fd = remote_socket;
-		ptarget->tail = 0;
+		ptarget->snd_head = ptarget->snd_tail = ptarget->snd_buff_len = 0;
+		ptarget->snd_buff = NULL;
 		insert_hash_map(penv , CR_HASH_MAP_T_TARGET , CR_HASH_ENTRY_T_FD , ptarget->fd , ptarget);
 		//mange only
 		pitem = get_manage_item_by_id(penv , ptarget->proc_id);
@@ -1043,7 +1047,6 @@ static int dispatch_bridge(int reward_ms)
 	char bridge_pack[BRIDGE_PACK_LEN*2];
 
 	int bridge_pack_len = 0;
-	unsigned int stlv_len = 0;
 	int ret = 0;
 	bridge_info_t *pbridge_info = &penv->bridge_info;
 	long curr_ts = 0;
@@ -1133,7 +1136,7 @@ static int dispatch_bridge(int reward_ms)
 		}
 
 		/***Init*/
-		if(!ptarget->buff || ptarget->buff_len==0)
+		if(!ptarget->snd_buff || ptarget->snd_buff_len==0)
 		{
 			ret = expand_target_buff(penv , ptarget);
 			if(ret < 0)
@@ -1155,9 +1158,9 @@ static int dispatch_bridge(int reward_ms)
 #endif
 
 		/***Flush Target*/
-		if(ptarget->tail > 0)
+		if(!TARGET_IS_EMPTY(ptarget))
 		{
-			slog_log(slogd , SL_DEBUG , "%s is sending remaining package to %d data_len:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail);
+			slog_log(slogd , SL_DEBUG , "%s is sending remaining package to %d data_len:%lu" , __FUNCTION__ , ptarget->proc_id ,TARGET_DATA_LEN(ptarget));
 			ret = flush_target(penv , ptarget);
 			switch(ret)
 			{
@@ -1177,18 +1180,18 @@ static int dispatch_bridge(int reward_ms)
 		}
 
 		/***Send Current Pack*/
-		if(ptarget->tail > 0)	//如果缓冲区未空，则说明当前不能发送，在STLV包之后投入缓冲区
+		if(!TARGET_IS_EMPTY(ptarget))	//如果缓冲区未空，则说明当前不能发送，在STLV包之后投入缓冲区
 		{
 			slog_log(slogd , SL_DEBUG , "%s target not empty! append directly!" , __FUNCTION__);
 
 			//剩余缓冲区空间不足则扩充缓冲区
-			if((ptarget->buff_len - ptarget->tail) < (STLV_PACK_SAFE_LEN(bridge_pack_len)))
+			if(TARGET_EMPTY_SPACE(ptarget) < (STLV_PACK_SAFE_LEN(bridge_pack_len)))
 			{
 				ret = expand_target_buff(penv , ptarget);
 				if(ret < 0)
 				{
 					slog_log(slogd , SL_ERR , "%s expand target failed! drop package. flush buff imcomplete. but target buff left space is too small! left:%d proper:%d" ,
-							__FUNCTION__ , ptarget->buff_len - ptarget->tail , STLV_PACK_SAFE_LEN(bridge_pack_len));
+							__FUNCTION__ , TARGET_EMPTY_SPACE(ptarget) , STLV_PACK_SAFE_LEN(bridge_pack_len));
 					pbridge_info->send.dropped++;
 					pbridge_info->send.latest_drop = curr_ts;
 					ptraffic->dropped++;
@@ -1198,8 +1201,9 @@ static int dispatch_bridge(int reward_ms)
 			}
 
 			//pack
-			stlv_len = STLV_PACK_ARRAY((unsigned char *)&ptarget->buff[ptarget->tail] , (unsigned char *)pstpack , bridge_pack_len);
-			if(stlv_len == 0)
+			ret = pkg_2_target(penv , ptarget , (char *)pstpack , bridge_pack_len);
+			//stlv_len = STLV_PACK_ARRAY((unsigned char *)&ptarget->buff[ptarget->tail] , (unsigned char *)pstpack , bridge_pack_len);
+			if(ret != 0)
 			{
 				slog_log(slogd , SL_ERR , "%s flush buff imcomplete and drop package for stlv pack failed!" , __FUNCTION__);
 				pbridge_info->send.dropped++;
@@ -1232,16 +1236,16 @@ static int dispatch_bridge(int reward_ms)
 				ptraffic->min_size = (pstpack->pack_head.data_len<ptraffic->min_size)?pstpack->pack_head.data_len:ptraffic->min_size;
 			ptraffic->ave_size = (ptraffic->ave_size*(ptraffic->handled-1)+pstpack->pack_head.data_len)/ptraffic->handled;
 
-
-			ptarget->tail += stlv_len;
-			ptarget->max_tail = ptarget->tail>ptarget->max_tail?ptarget->tail:ptarget->max_tail;
+			ret = TARGET_DATA_LEN(ptarget);
+			ptarget->max_tail = ret>ptarget->max_tail?ret:ptarget->max_tail;
 			continue;
 		}
 
 		//缓冲区已空，或可发送
 		//打包
-		stlv_len = STLV_PACK_ARRAY(ptarget->buff , pstpack , bridge_pack_len);
-		if(stlv_len == 0)
+		ret = pkg_2_target(penv , ptarget , (char *)pstpack , bridge_pack_len);
+		//stlv_len = STLV_PACK_ARRAY(ptarget->buff , pstpack , bridge_pack_len);
+		if(ret != 0)
 		{
 			pbridge_info->send.dropped++;
 			pbridge_info->send.latest_drop = curr_ts;
@@ -1272,10 +1276,10 @@ static int dispatch_bridge(int reward_ms)
 		ptraffic->ave_size = (ptraffic->ave_size*(ptraffic->handled-1)+pstpack->pack_head.data_len)/ptraffic->handled;
 
 		//发送
-		ptarget->tail = stlv_len;
-		ptarget->max_tail = ptarget->tail>ptarget->max_tail?ptarget->tail:ptarget->max_tail;
+		ret = TARGET_DATA_LEN(ptarget);
+		ptarget->max_tail = ret>ptarget->max_tail?ret:ptarget->max_tail;
 		ptarget->delay_starts_ms = get_curr_ms();
-		slog_log(slogd , SL_INFO , "%s is sending curr package to %d data_len:%d seq:%d" , __FUNCTION__ , ptarget->proc_id ,ptarget->tail , ptraffic->handled);
+		slog_log(slogd , SL_DEBUG , "%s is sending curr package to %d data_len:%d seq:%d" , __FUNCTION__ , ptarget->proc_id ,ret , ptraffic->handled);
 		ret = flush_target(penv , ptarget);
 		switch(ret)
 		{
@@ -1315,7 +1319,7 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 	int ret = 0;
 	unsigned int pack_len = 0;
 	unsigned int value_len = 0;
-	int info;
+	char info;
 	long curr_ts = time(NULL);
 	long long curr_ms = get_curr_ms();
 	int diff_ms = 0;
@@ -1834,9 +1838,9 @@ static void handle_connecting_fd(target_detail_t *ptarget , struct epoll_event *
 
 		//update info
 		ptarget->connected = TARGET_CONN_DONE;
-		ptarget->buff = NULL;
-		ptarget->buff_len = 0;
-		ptarget->tail = 0;
+		ptarget->snd_buff = NULL;
+		ptarget->snd_buff_len = 0;
+		ptarget->snd_head = ptarget->snd_tail = 0;
 
 		//mange only
 		pitem = get_manage_item_by_id(penv , ptarget->proc_id);
@@ -1887,8 +1891,8 @@ static void handle_connecting_fd(target_detail_t *ptarget , struct epoll_event *
 				success = 1;
 				//update info
 				ptarget->connected = TARGET_CONN_DONE;
-				ptarget->buff = NULL;
-				ptarget->buff_len = ptarget->tail = 0;
+				ptarget->snd_buff = NULL;
+				ptarget->snd_buff_len = ptarget->snd_head = ptarget->snd_tail = 0;
 				set_sock_option(handle_fd , BRIDGE_PACK_LEN , 1024*2 , 1);
 
 				//mange only
