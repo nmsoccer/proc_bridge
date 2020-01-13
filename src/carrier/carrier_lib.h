@@ -130,6 +130,16 @@ extern int manager_handle(manager_info_t *pmanager , char *package , int slogd);
  *  0:成功
  */
 extern int flush_target(carrier_env_t *penv , target_detail_t *ptarget);
+
+/*
+ * 直接发送数据[这种情况实在target缓冲区为空的情况下进行]
+ * @stlv_buff:打包好的缓冲区
+ * @stlv_len:包长
+ * @return
+ * -1:错误
+ *  >=0:发送的字节数
+ */
+extern int direct_send(carrier_env_t *penv , target_detail_t *ptarget , char *stlv_buff , int stlv_len);
 /*
  * 初始化manager的管理列表
  */
@@ -165,9 +175,10 @@ extern int close_target_fd(carrier_env_t *penv , target_detail_t *ptarget , cons
 extern int append_sending_node(carrier_env_t *penv , target_detail_t *ptarget);
 extern int del_sending_node(carrier_env_t *penv , target_detail_t *ptarget);
 //遍历sending node
-extern int iter_sending_node(void *arg);
+extern int iter_sending_list(carrier_env_t *penv , char del);
 extern int del_sending_list(carrier_env_t *penv);
 //将数据放入target
 extern int pkg_2_target(carrier_env_t *penv , target_detail_t *ptarget , char *pkg , int pkg_len);
+extern int pkg_2_target_stlv(carrier_env_t *penv , target_detail_t *ptarget , char *stlv_buff , int stlv_len);
 
 #endif /* CARRIER_LIB_H_*/

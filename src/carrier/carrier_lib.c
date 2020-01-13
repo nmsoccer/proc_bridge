@@ -393,6 +393,60 @@ int flush_target(carrier_env_t *penv , target_detail_t *ptarget)
    return flush_target_2(penv , ptarget);
 }
 
+
+/*
+ * 直接发送数据[这种情况实在target缓冲区为空的情况下进行]
+ * @stlv_buff:打包好的缓冲区
+ * @stlv_len:包长
+ * @return
+ * -1:错误
+ *  >=0:发送的字节数
+ */
+int direct_send(carrier_env_t *penv , target_detail_t *ptarget , char *stlv_buff , int stlv_len)
+{
+	int ret = 0;
+	int result = 0;
+    int slogd = penv->slogd;
+
+	//send
+	ret = send(ptarget->fd ,  stlv_buff , stlv_len , 0);
+
+	//send failed
+	if(ret < 0)
+	{
+		switch(errno)
+		{
+		case EAGAIN:	//socket发送缓冲区满，稍后再试
+		//case EWOULDBLOCK:
+			slog_log(slogd , SL_INFO , "%s send failed for socket buff full!" , __FUNCTION__);
+			result = 0;
+		break;
+		default:
+			slog_log(slogd , SL_ERR , "%s send failed for err:%s. and will reset connection." , __FUNCTION__ , strerror(errno));
+			//此时出现错误，应主动关闭链接，用于清除本端和对端的缓冲区数据，防止错误包雪崩。并在后续进行重连
+			result = -1;
+		break;
+		}
+
+		return result;
+	}
+
+	//send all of data
+	if(ret == stlv_len)
+	{
+		slog_log(slogd , SL_DEBUG , "%s send all buff success! stlv_len:%d" , __FUNCTION__ , stlv_len);
+		return ret;
+	}
+
+	//send part of data
+	slog_log(slogd , SL_DEBUG , "%s send part of buff! sended:%d all:%lu" , __FUNCTION__ , ret , stlv_len);
+	ptarget->latest_send_bytes = ret;
+	ptarget->latest_send_ts = (long)(get_curr_ms()/1000);
+
+	//check snd block
+	return ret;
+}
+
 /*
  * 将数据写入target
  * return:
@@ -465,21 +519,11 @@ int pkg_2_target(carrier_env_t *penv , target_detail_t *ptarget , char *pkg , in
 }
 
 
-/*
-int pkg_2_target(carrier_env_t *penv , target_detail_t *ptarget , char *pkg , int pkg_len)
+
+int pkg_2_target_stlv(carrier_env_t *penv , target_detail_t *ptarget , char *stlv_buff , int stlv_len)
 {
-	int stlv_len = 0;
 	int slogd = penv->slogd;
 	int copy = 0;
-	char stlv_buff[BRIDGE_PACK_LEN  + 64];
-
-	//pack
-	stlv_len = STLV_PACK_ARRAY(stlv_buff , pkg , pkg_len);
-	if(stlv_len == 0)
-	{
-		slog_log(slogd , SL_ERR , "<%s> flush buff imcomplete and drop package for stlv pack failed!" , __FUNCTION__);
-		return -1;
-	}
 
 	//check len
 	if(TARGET_EMPTY_SPACE(ptarget) < stlv_len)
@@ -516,7 +560,7 @@ int pkg_2_target(carrier_env_t *penv , target_detail_t *ptarget , char *pkg , in
 	//upate
 	return 0;
 }
-*/
+
 
 /*
  *向manager发送carrier消息
@@ -1272,7 +1316,7 @@ int print_manage_item_list(int starts , manage_item_t *item_list , int count , F
 		if(pitem->run_stat.bridge_stat.check_time > 0)
 		{
 			fprintf(fp , "*updated on:%s\n" , format_time_stamp(pitem->run_stat.bridge_stat.check_time));
-			fprintf(fp , "%6s %-10s %-10s %-10s %-10s %-10s %-10s %-10s %-10s %-10s %-20s %-10s %-20s \n\n" , " " , "size" , "head" , "tail" , "opted" , "opting" , "max_size" , "min_size" , "ave_size" ,
+			fprintf(fp , "%6s %-10s %-10s %-10s %-10s %-10s %-10s %-10s %-10s %-10s %-20s %-10s %-20s \n\n" , " " , "size" , "head" , "tail" , "opted" , "opting" , "min_size" , "max_size" , "ave_size" ,
 					"dropped" , "latest_drop" , "reseted" ,  "latest_reset");
 
 			pinfo = &pitem->run_stat.bridge_stat.info.send;
@@ -1542,6 +1586,7 @@ int close_target_fd(carrier_env_t *penv , target_detail_t *ptarget , const char 
 	ptarget->traffic.reset++;
 	ptarget->traffic.latest_reset = curr_ts;
 	clr_snd_bit(penv->phub , ptarget->proc_id , penv->slogd);		//清除置位
+	//ptarget->in_append = 0;
 	ptarget->snd_block = 0;
 	slog_log(penv->slogd , SL_INFO , "<%s> close target success! fd:%d proc[%s:%d] addr:<%s:%d>" , __FUNCTION__ , handle_fd ,
 			ptarget->target_name , ptarget->proc_id , ptarget->ip_addr , ptarget->port);
@@ -2013,191 +2058,128 @@ char *format_time_stamp(long ts)
 int append_sending_node(carrier_env_t *penv , target_detail_t *ptarget)
 {
 	int slogd = -1;
-	sending_node_t *pnode = NULL;
-	sending_node_t *pempty = NULL;
 
 	/***Arg Check*/
 	if(!penv || !ptarget)
 		return -1;
 
 	slogd = penv->slogd;
-	/***Search whether target Exist and Remark an empty node if exist*/
-	pnode = penv->sending_list.head_node.next;
-	while(pnode)
-	{
-		if(pnode->proc_id <= 0)
-			pempty = pnode;
-
-		if(pnode->proc_id == ptarget->proc_id)
-			return 0;
-
-		pnode = pnode->next;
-	}
-
-	/***Get an Empty Node*/
-	if(pempty)
-	{
-		pempty->proc_id = ptarget->proc_id;
-		pempty->ptarget = ptarget;
-		penv->sending_list.valid++;
-		slog_log(slogd , SL_DEBUG , "<%s> remark an empty node success! <%s:%d> total:%d valid:%d" , __FUNCTION__ , ptarget->target_name ,
-				ptarget->proc_id , penv->sending_list.total , penv->sending_list.valid);
+	/***If append*/
+	if(ptarget->in_append)
 		return 0;
-	}
 
-	/***Alloc*/
-	pnode = calloc(1 , sizeof(sending_node_t));
-	if(!pnode)
-	{
-		slog_log(slogd , SL_ERR , "<%s> alloc node failed! err:%s" , __FUNCTION__ , strerror(errno));
-		return -1;
-	}
+	/***append*/
+	ptarget->appending.next = penv->sending_list.head.next;
+	penv->sending_list.head.next = &ptarget->appending;
 
-	//update pnode
-	pnode->proc_id = ptarget->proc_id;
-	pnode->ptarget = ptarget;
-	pnode->prev = &penv->sending_list.head_node;
-	if(penv->sending_list.head_node.next)
-		penv->sending_list.head_node.next->prev = pnode;
-	pnode->next = penv->sending_list.head_node.next;
-	penv->sending_list.head_node.next = pnode;
-
+	ptarget->in_append = 1;
 	//update list
 	penv->sending_list.total++;
-	penv->sending_list.valid++;
-	slog_log(slogd , SL_DEBUG , "<%s> alloc new node success! <%s:%d> total:%d valid:%d" , __FUNCTION__ , ptarget->target_name ,
-					ptarget->proc_id , penv->sending_list.total , penv->sending_list.valid);
+	slog_log(slogd , SL_DEBUG , "<%s>  success! <%s:%d> total:%d " , __FUNCTION__ , ptarget->target_name ,
+					ptarget->proc_id , penv->sending_list.total);
 	return 0;
 }
 
-int del_sending_node(carrier_env_t *penv , target_detail_t *ptarget)
-{
-	int slogd = -1;
-	sending_node_t *pnode = NULL;
-	sending_node_t *ptmp = NULL;
-	char found = 0;
-	int reserved = 0;
 
-	/***Arg Check*/
-	if(!penv || !ptarget)
-		return -1;
 
-	slogd = penv->slogd;
-	pnode = penv->sending_list.head_node.next;
-	/***Search*/
-	while(pnode)
-	{
-		if(pnode->proc_id == ptarget->proc_id)
-		{
-			found = 1;
-			break;
-		}
-		pnode = pnode->next;
-	}
-
-	if(!found)
-	{
-		slog_log(slogd , SL_ERR , "<%s> target not found! proc_id:%d" , __FUNCTION__ , ptarget->proc_id);
-		return -1;
-	}
-
-	/***Del Node*/
-	//1.如果剩余节点小于max(总量的1/5,1)则不再释放，作为预分配节点保留
-	reserved = (penv->ptarget_info->target_count/5)>1?(penv->ptarget_info->target_count/5):1;
-	if(penv->sending_list.total <= reserved)
-	{
-		slog_log(slogd , SL_DEBUG , "<%s> rest node will be reserved %d vs %d." , __FUNCTION__ , penv->sending_list.total ,reserved);
-
-		pnode->proc_id = -1;
-		pnode->ptarget = NULL;
-		penv->sending_list.valid--;
-		return 0;
-	}
-
-	//2.剩余节点>=1/5则删除节点
-	ptmp = pnode->prev;
-	ptmp->next = pnode->next;
-	if(pnode->next)
-		pnode->next->prev = ptmp;
-	free(pnode);
-
-	penv->sending_list.total--;
-	penv->sending_list.valid--;
-	slog_log(slogd , SL_DEBUG , "<%s> will destroy node! proc_id:%d rest total:%d valid:%d" , __FUNCTION__ , ptarget->proc_id ,
-			penv->sending_list.total ,	penv->sending_list.valid);
-	return 0;
-}
-
-//遍历sending node
-int iter_sending_node(void *arg)
+//遍历sending list
+//del:1:删除所有节点 0:未清空的节点重新加入链表
+int iter_sending_list(carrier_env_t *penv , char del)
 {
 	int ret = -1;
 	int slogd = -1;
-	sending_node_t *pnode = NULL;
-	sending_node_t *ptmp = NULL;
+	link_list_t *ptmp = NULL;
+	link_list_t *pnow = NULL;
 	target_detail_t *ptarget = NULL;
-	carrier_env_t *penv = (carrier_env_t *)arg;
+
+
+	link_list_t reserv_head = {NULL}; //需要继续维持的链表
+	int reserv_count = 0;
+	char need_reserv = 0;	//是否保存当前节点
 	long long start_ms = 0;
 
 	if(!penv)
 		return 0;
+	if(penv->sending_list.total <= 0 || !penv->sending_list.head.next)
+		return 0;
+
+	//init
+	start_ms = get_curr_ms();
 	slogd = penv->slogd;
-	pnode = penv->sending_list.head_node.next;
 
-	if(penv->sending_list.valid>0)	//only get if valid
-		start_ms = get_curr_ms();
-
-	while(pnode && penv->sending_list.valid>0)
+	//start iter
+	pnow = penv->sending_list.head.next;
+	while(pnow)
 	{
-		ptmp = pnode->next;
-
+		ptarget = (target_detail_t *)GET_STRUCT_ADDR(target_detail_t , appending , pnow);
+		ptmp = pnow->next;
+		need_reserv = 0;
 		//handle
 		do
 		{
-			//1.节点有效性
-			if(pnode->proc_id <= 0)
-				break;
-
-			ptarget = pnode->ptarget;
-			//2.节点链接错误
-			if(!ptarget || ptarget->connected != TARGET_CONN_DONE)
+			//1.节点链接错误
+			if(ptarget->connected != TARGET_CONN_DONE)
 			{
-				slog_log(slogd , SL_ERR , "<%s> detect node:%d but target wrong!" , __FUNCTION__ , pnode->proc_id);
-				del_sending_node(penv , ptarget);
+				slog_log(slogd , SL_ERR , "<%s> detect node:%d but target wrong!" , __FUNCTION__ , ptarget->proc_id);
+				//del_sending_node(penv , ptarget);
 				break;
 			}
 
 			//3.节点已无数据
 			if(TARGET_IS_EMPTY(ptarget))
 			{
-				slog_log(slogd , SL_DEBUG , "<%s> detect buff <%s:%d> empty!" , __FUNCTION__ , ptarget->target_name , pnode->proc_id);
-				del_sending_node(penv , ptarget);
+				slog_log(slogd , SL_DEBUG , "<%s> detect buff <%s:%d> empty!" , __FUNCTION__ , ptarget->target_name , ptarget->proc_id);
+				//del_sending_node(penv , ptarget);
 				break;
 			}
 
 			//4.flush
-			slog_log(slogd , SL_DEBUG , "<%s> try to flush target buff <%s:%d>" , __FUNCTION__ , ptarget->target_name , pnode->proc_id);
+			slog_log(slogd , SL_DEBUG , "<%s> try to flush target buff <%s:%d>" , __FUNCTION__ , ptarget->target_name , ptarget->proc_id);
 			ret = flush_target(penv , ptarget);
 			if(ret < 0)
 			{
 				slog_log(slogd , SL_INFO , "<%s> flush target <%s:%d> failed! try to close it!" , __FUNCTION__ , ptarget->target_name ,
 						ptarget->proc_id);
 				close_target_fd(penv , ptarget , __FUNCTION__ , penv->epoll_fd , 1);
-				del_sending_node(penv , ptarget);
+				//del_sending_node(penv , ptarget);
 			}
 			else if(ret == 1)	//完全清空 则删除节点
 			{
-				slog_log(slogd , SL_DEBUG , "<%s> flush <%s:%d> complete!" , __FUNCTION__ , ptarget->target_name , pnode->proc_id);
-				del_sending_node(penv , ptarget);
+				slog_log(slogd , SL_DEBUG , "<%s> flush <%s:%d> complete!" , __FUNCTION__ , ptarget->target_name , ptarget->proc_id);
+				//del_sending_node(penv , ptarget);
+			}
+			else
+			{
+				slog_log(slogd , SL_DEBUG , "<%s> flush <%s:%d> imcomplete , reserve it" , __FUNCTION__ , ptarget->target_name , ptarget->proc_id);
+				need_reserv = del==0?1:0;	//数据没有清空,如果不是删除列表则继续保持
 			}
 
 			break;
 		}
 		while(0);
 
+		//check reserv
+		if(need_reserv)
+		{
+			pnow->next = reserv_head.next;
+			reserv_head.next = pnow;
+			reserv_count++;
+		}
+		else
+		{
+			ptarget->in_append = 0;
+			pnow->next = NULL;
+			//penv->sending_list.total--; no need
+		}
+
 		//next
-		pnode = ptmp;
+		pnow = ptmp;
 	}
+
+	//rebuild sending list
+	penv->sending_list.total = reserv_count;
+	penv->sending_list.head.next = reserv_head.next;
+	slog_log(slogd , SL_DEBUG , "%s finish! rebuild sending list! reserv count:%d" , __FUNCTION__ , reserv_count);
 
 	if(start_ms > 0)
 		return get_curr_ms() - start_ms;
@@ -2205,25 +2187,17 @@ int iter_sending_node(void *arg)
 	return 0;
 }
 
+
 int del_sending_list(carrier_env_t *penv)
 {
 	int slogd = -1;
-	sending_node_t *pnode = NULL;
-	sending_node_t *ptmp = NULL;
 	if(!penv)
 		return -1;
 
 	slogd = penv->slogd;
-	pnode = penv->sending_list.head_node.next;
-	slog_log(slogd , SL_INFO , "<%s> sending_list:total:%d valid:%d" , __FUNCTION__ , penv->sending_list.total , penv->sending_list.valid);
-	//free node
-	while(pnode)
-	{
-		ptmp = pnode->next;
-		free(pnode);
-		pnode = ptmp;
-	}
-
+	slog_log(slogd , SL_INFO , "<%s> sending_list:total:%d" , __FUNCTION__ , penv->sending_list.total);
+	//强制遍历列表并不重新投递
+	iter_sending_list(penv , 1);
 	//clear info
 	memset(&penv->sending_list , 0 , sizeof(sending_list_t));
 	return 0;
@@ -2953,7 +2927,7 @@ static int flush_target_1(carrier_env_t *penv , target_detail_t *ptarget)
 		{
 		case EAGAIN:	//socket发送缓冲区满，稍后再试
 		//case EWOULDBLOCK:
-			slog_log(slogd , SL_DEBUG , "%s send failed for socket buff full!" , __FUNCTION__);
+			slog_log(slogd , SL_INFO , "%s send failed for socket buff full!" , __FUNCTION__);
 			//检查是否到达缓冲区上限及触发封锁水位
 			if(ptarget->snd_buff_len >= penv->max_expand_size)
 			{

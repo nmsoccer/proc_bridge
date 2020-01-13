@@ -73,7 +73,8 @@ static int parse_target_list(char *target_list , target_detail_t *ptarget);
 static int dispatch_bridge(int reward_ms);
 static int show_help(void);
 static int set_nonblock(int fd);
-static int fetch_send_channel(bridge_hub_t *phub , char *buff);
+static int fetch_send_channel(carrier_env_t *penv , bridge_hub_t *phub , char *buff);
+static int fetch_send_channel_stlv(carrier_env_t *penv , bridge_hub_t *phub , char *stlv_buff);
 //static int append_recv_channel(bridge_hub_t *phub , char *buff);
 static int read_client_socket(int socket , bridge_hub_t *phub);
 static int free_client_info(client_info_t *pclient);
@@ -279,6 +280,7 @@ int main(int argc , char **argv)
 	}
 
 	//设置stlv
+	STLV_SET_LOG(slogd);
 	STLV_CHECK_SUM_SIZE(MAX_CHECK_SUM_BYTES);
 
 	/***打开bridge*/
@@ -420,15 +422,21 @@ int main(int argc , char **argv)
 
 		/*取包发送*/
 		cost_ms = dispatch_bridge(reward_ms);
-		//slog_log(penv->slogd , SL_VERBOSE , "main:dispatch_bridge:cost:%ld" , cost_ms);
 		total_cost += cost_ms;
-
-		/*如果取包消耗为0则进行-主动推送*/
-		if(total_cost == 0)
+		if(cost_ms > 0)
 		{
-			cost_ms = iter_sending_node(penv);
-			total_cost += cost_ms;
+			//slog_log(penv->slogd , SL_DEBUG , "main:dispatch_bridge:cost:%ld" , cost_ms);
 		}
+		/*如果取包消耗为0则进行-主动推送*/
+		//if(total_cost >= 0)
+		//{
+			cost_ms = iter_sending_list(penv , 0);
+			total_cost += cost_ms;
+			if(cost_ms>0)
+			{
+				//slog_log(penv->slogd , SL_DEBUG , "main:trig iter sending:cost:%ld" , cost_ms);
+			}
+		//}
 
 		/*epoll wait*/
 		/*
@@ -442,7 +450,7 @@ int main(int argc , char **argv)
 		active_fds = epoll_wait(penv->epoll_fd , ep_event_list , MAX_EPOLL_QUEUE , epoll_cost);
 		if(active_fds < 0)
 		{
-			slog_log(slogd , SL_VERBOSE , "epoll_wait err:%s" , strerror(errno));
+			//slog_log(slogd , SL_VERBOSE , "epoll_wait err:%s" , strerror(errno));
 			//continue;
 		}
 
@@ -472,7 +480,7 @@ int main(int argc , char **argv)
 				set_nonblock(acc_socket);	/*非阻塞*/
 				//接收缓冲区需要扩大,发送缓冲区可以缩小因为不发送
 				slog_log(slogd , SL_INFO , "<<<<<<<<<<<<<<<Main:Accept socket from %s:%d!}" , inet_ntoa(cli_addr.sin_addr) , ntohs(cli_addr.sin_port));
-				set_sock_option(acc_socket , 2048 , BRIDGE_PACK_LEN , 0);
+				set_sock_option(acc_socket , 2048 , CARRIER_SOCKET_BUFF_BIG , 0);
 				ep_event.events = EPOLLIN | EPOLLET;
 				ep_event.data.fd = acc_socket;
 				ret = epoll_ctl(penv->epoll_fd , EPOLL_CTL_ADD , acc_socket , &ep_event);
@@ -570,18 +578,21 @@ int main(int argc , char **argv)
 			net_idle += 1;	//网络空闲则等待多加1us最高不超MAX_EPOLL_WAIT 大概会在(sum(1,10)s)后回归到10ms的epoll_wait时间以适应交互式的通信
 			net_idle = net_idle>10000?10000:net_idle; //10000 ~= MAX_EPOLL_WAIT/0.001
 			if(net_idle%1000 == 0 && net_idle!=10000)
-				slog_log(slogd , SL_VERBOSE , "net idle incresed to %d" , net_idle);
+			{
+				//slog_log(slogd , SL_VERBOSE , "net idle incresed to %d" , net_idle);
+			}
 
 		}
 		else	//如果未等待则检查sleep时间,同时网络空闲恢复初始值(epoll_wait的等待时间恢复为忙等1ms)
 		{
 			reward_ms = 0;
 			net_idle = 0;
-			slog_log(slogd , SL_VERBOSE , "net_idle reset!");
+			//slog_log(slogd , SL_VERBOSE , "net_idle reset!");
 			end_ms = get_curr_ms();
+			//slog_log(penv->slogd , SL_DEBUG , "main:handle recving:cost:%ld" , end_ms - (start_ms+total_cost));
 			if((end_ms-start_ms) >= MS_PER_TICK)
 			{
-				//usleep(500);
+
 			}
 			else
 			{
@@ -658,6 +669,138 @@ static int set_nonblock(int fd)
 }
 
 
+/*
+ * fetch_send_channel
+ * 从send_channel中获一个package
+ * @phub:该进程打开的bridge
+ * @buff:
+ * @return:
+ * -1：错误
+ * -2：发送缓冲区空
+ * >=0：成功 并返回读取的包长
+ */
+static int fetch_send_channel_stlv(carrier_env_t *penv , bridge_hub_t *phub , char *stlv_buff)
+{
+	bridge_package_t *pstpack;
+	char *send_channel = NULL;
+	int copyed = 0;
+
+	int head_pos = 0;
+	int tail_pos = 0;
+	int channel_len;
+	int pack_len;
+	int data_len;
+	int head_len = 0;
+	int stlv_len = -1;
+	char head_buff[BRIDGE_PACK_HEAD_LEN] = {0};
+	char buff[BRIDGE_PACK_LEN + 64];
+	/***Arg Check*/
+	if(!phub ||!stlv_buff)
+	{
+		return -1;
+	}
+
+	head_pos = phub->send_head;
+	tail_pos = phub->send_tail;
+	/***接收*/
+	//1.检查是否有数据
+	if(head_pos == tail_pos)
+	{
+		return -2;
+	}
+
+	//获取发送区地址
+	send_channel = GET_SEND_CHANNEL(phub);
+
+	//other
+	channel_len = phub->send_buff_size;
+	pack_len = sizeof(bridge_package_t);
+
+	//1.5 预读头部
+	if((channel_len - head_pos) < pack_len)	/*余下不足头部*/
+	{
+		copyed = channel_len - head_pos;
+		memcpy(head_buff , &send_channel[head_pos] , copyed);
+		memcpy(&head_buff[copyed] , &send_channel[0] , pack_len-copyed);
+	}
+	else	/*余下可以放下下头部*/
+	{
+		memcpy(head_buff , &send_channel[head_pos] , pack_len);
+	}
+	pstpack = (bridge_package_t *)head_buff;
+	data_len = pstpack->pack_head.data_len;
+	pack_len += data_len;
+
+	//Handle
+	//1.除了[head->tail]不足一个包长的情况，其他情况都直接压缩到缓冲区里
+	if((channel_len - head_pos) >= pack_len)
+	{
+		stlv_len = STLV_PACK_ARRAY(stlv_buff , &send_channel[head_pos] , pack_len);
+		if(stlv_len == 0)
+		{
+			slog_log(penv->slogd , SL_ERR , "%s pack failed!" , __FUNCTION__);
+			return -1;
+		}
+		head_pos += pack_len;
+		head_pos %= channel_len;
+	}
+	else //2.不足一个包长要特殊处理
+	{
+		slog_log(penv->slogd , SL_DEBUG , "%s special pack! head_pos:%d channel_len:%d pack_len:%d" , __FUNCTION__ , head_pos , channel_len ,
+				pack_len);
+		head_len = sizeof(bridge_package_t);
+		//2.先读取头部区
+		if((channel_len - head_pos) < head_len)	/*余下不足头部*/
+		{
+			copyed = channel_len - head_pos;
+			memcpy(buff , &send_channel[head_pos] , copyed);
+			memcpy(&buff[copyed] , &send_channel[0] , head_len-copyed);
+			head_pos = 0 + head_len - copyed;
+		}
+		else	/*余下可以放下下头部*/
+		{
+			memcpy(buff , &send_channel[head_pos] , head_len);
+			head_pos += head_len;
+			head_pos %= channel_len;
+		}
+
+		//3.获得头部后
+		pstpack = (bridge_package_t *)buff;
+		data_len = pstpack->pack_head.data_len;
+		pack_len = head_len + data_len;
+
+		//4.读取数据
+		if((channel_len - head_pos) < data_len)	/*余下不足数据*/
+		{
+			copyed = channel_len - head_pos;
+			memcpy(pstpack->pack_data , &send_channel[head_pos] , copyed);
+			memcpy(&pstpack->pack_data[copyed] , &send_channel[0] , data_len-copyed);
+			head_pos = 0 + data_len - copyed;
+		}
+		else	/*余下可以放下数据*/
+		{
+			memcpy(pstpack->pack_data, &send_channel[head_pos] , data_len);
+			head_pos += data_len;
+			head_pos %= channel_len;
+		}
+
+		//5.打包
+		stlv_len = STLV_PACK_ARRAY(stlv_buff , buff , pack_len);
+		if(stlv_len == 0)
+		{
+			slog_log(penv->slogd , SL_ERR , "%s 2 pack failed!" , __FUNCTION__);
+			return -1;
+		}
+	}
+
+	//4.在读完该内存之后再修改位置指针，因为write会比较head指针位置.否则会出现同步错误
+	phub->sending_count--;
+	phub->send_head = head_pos;
+
+	return stlv_len;
+}
+
+
 
 /*
  * fetch_send_channel
@@ -669,7 +812,7 @@ static int set_nonblock(int fd)
  * -2：发送缓冲区空
  * >=0：成功 并返回读取的包长
  */
-static int fetch_send_channel(bridge_hub_t *phub , char *buff)
+static int fetch_send_channel(carrier_env_t *penv , bridge_hub_t *phub , char *buff)
 {
 	bridge_package_t *pstpack;
 	char *send_channel = NULL;
@@ -1020,7 +1163,7 @@ static int  connect_to_remote(void *arg)
 			pitem->my_conn_stat = ptarget->connected;
 		}
 
-		set_sock_option(remote_socket , BRIDGE_PACK_LEN , 1024*2 , 1);
+		set_sock_option(remote_socket , CARRIER_SOCKET_BUFF_BIG , 1024*2 , 1);
 		count++;
 
 	}
@@ -1044,8 +1187,10 @@ static int dispatch_bridge(int reward_ms)
 	bridge_package_t *pstpack;
 	target_detail_t *ptarget = NULL;
 	conn_traffic_t *ptraffic = NULL;
-	char bridge_pack[BRIDGE_PACK_LEN*2];
+	//char stlv_pack[BRIDGE_PACK_LEN*2];
+	//int stlv_len = 0;
 
+	char buff[BRIDGE_PACK_LEN+64];
 	int bridge_pack_len = 0;
 	int ret = 0;
 	bridge_info_t *pbridge_info = &penv->bridge_info;
@@ -1053,7 +1198,7 @@ static int dispatch_bridge(int reward_ms)
 	long long enter_ms = get_curr_ms();
 	long long curr_ms = 0;
 	long long end_ms = 0;
-
+	int size_door = 10*1024;
 #ifdef _TRACE_DEBUG
 	char test_buff[_TRACE_DEBUG_BUFF_LEN] = {0};
 #endif
@@ -1067,8 +1212,8 @@ static int dispatch_bridge(int reward_ms)
 
 		curr_ts = curr_ms/1000;
 		/**Fetch a Pack*/
-		pstpack = (bridge_package_t *)bridge_pack;
-		bridge_pack_len = fetch_send_channel(penv->phub , bridge_pack);
+		//stlv_len = fetch_send_channel_stlv(penv , penv->phub , stlv_pack);
+		bridge_pack_len = fetch_send_channel(penv , penv->phub , buff);
 		if(bridge_pack_len == -1)
 		{
 			slog_log(slogd , SL_ERR , "%s fetch package failed for err!" , __FUNCTION__);
@@ -1085,6 +1230,8 @@ static int dispatch_bridge(int reward_ms)
 			slog_log(slogd , SL_ERR , "%s fetch an zero package!" , __FUNCTION__);
 			break;
 		}
+		//bridge_pack_len = STLV_VALUE_INFO(stlv_pack , (char **)&pstpack);
+		pstpack = (bridge_package_t *)buff;
 
 
 		//slog_log(slogd , SL_DEBUG , "%s fetch pack success! len:%d and target:%d ts:%lld content:%s" , __FUNCTION__ , bridge_pack_len , pstpack->pack_head.recver_id ,
@@ -1158,7 +1305,10 @@ static int dispatch_bridge(int reward_ms)
 #endif
 
 		/***Flush Target*/
-		if(!TARGET_IS_EMPTY(ptarget))
+		//if(!TARGET_IS_EMPTY(ptarget))
+		size_door = (ptraffic->ave_size>0)?ptraffic->ave_size*2:size_door;
+		//if(TARGET_DATA_LEN(ptarget)>=size_door)
+		if(TARGET_DATA_LEN(ptarget)>=BRIDGE_PACK_LEN)
 		{
 			slog_log(slogd , SL_DEBUG , "%s is sending remaining package to %d data_len:%lu" , __FUNCTION__ , ptarget->proc_id ,TARGET_DATA_LEN(ptarget));
 			ret = flush_target(penv , ptarget);
@@ -1183,6 +1333,7 @@ static int dispatch_bridge(int reward_ms)
 		if(!TARGET_IS_EMPTY(ptarget))	//如果缓冲区未空，则说明当前不能发送，在STLV包之后投入缓冲区
 		{
 			slog_log(slogd , SL_DEBUG , "%s target not empty! append directly!" , __FUNCTION__);
+			append_sending_node(penv , ptarget);
 
 			//剩余缓冲区空间不足则扩充缓冲区
 			if(TARGET_EMPTY_SPACE(ptarget) < (STLV_PACK_SAFE_LEN(bridge_pack_len)))
@@ -1202,6 +1353,7 @@ static int dispatch_bridge(int reward_ms)
 
 			//pack
 			ret = pkg_2_target(penv , ptarget , (char *)pstpack , bridge_pack_len);
+			//ret = pkg_2_target_stlv(penv , ptarget , stlv_pack , stlv_len);
 			//stlv_len = STLV_PACK_ARRAY((unsigned char *)&ptarget->buff[ptarget->tail] , (unsigned char *)pstpack , bridge_pack_len);
 			if(ret != 0)
 			{
@@ -1214,7 +1366,7 @@ static int dispatch_bridge(int reward_ms)
 			}
 
 			//upate
-			slog_log(slogd , SL_DEBUG , "%s flush buff imcomplete and saved to buff success!" , __FUNCTION__);
+			slog_log(slogd , SL_VERBOSE , "%s flush buff imcomplete and saved to buff success!" , __FUNCTION__);
 
 			//只记录业务包
 			if(pstpack->pack_head.pkg_type == BRIDGE_PKG_TYPE_NORMAL)
@@ -1244,6 +1396,7 @@ static int dispatch_bridge(int reward_ms)
 		//缓冲区已空，或可发送
 		//打包
 		ret = pkg_2_target(penv , ptarget , (char *)pstpack , bridge_pack_len);
+		//ret = pkg_2_target_stlv(penv , ptarget , stlv_pack , stlv_len);
 		//stlv_len = STLV_PACK_ARRAY(ptarget->buff , pstpack , bridge_pack_len);
 		if(ret != 0)
 		{
@@ -1275,10 +1428,13 @@ static int dispatch_bridge(int reward_ms)
 			ptraffic->min_size = (pstpack->pack_head.data_len<ptraffic->min_size)?pstpack->pack_head.data_len:ptraffic->min_size;
 		ptraffic->ave_size = (ptraffic->ave_size*(ptraffic->handled-1)+pstpack->pack_head.data_len)/ptraffic->handled;
 
+		append_sending_node(penv , ptarget);
+		slog_log(slogd , SL_DEBUG , "%s is saving curr package to %d data_len:%d seq:%d" , __FUNCTION__ , ptarget->proc_id ,ret , ptraffic->handled);
 		//发送
+		/*
 		ret = TARGET_DATA_LEN(ptarget);
 		ptarget->max_tail = ret>ptarget->max_tail?ret:ptarget->max_tail;
-		ptarget->delay_starts_ms = get_curr_ms();
+		ptarget->delay_starts_ms = curr_ms;
 		slog_log(slogd , SL_DEBUG , "%s is sending curr package to %d data_len:%d seq:%d" , __FUNCTION__ , ptarget->proc_id ,ret , ptraffic->handled);
 		ret = flush_target(penv , ptarget);
 		switch(ret)
@@ -1295,6 +1451,31 @@ static int dispatch_bridge(int reward_ms)
 		default:
 		break;
 		}
+		*/
+
+		/*
+		slog_log(slogd , SL_DEBUG , "%s is sending curr package to %d data_len:%d seq:%d" , __FUNCTION__ , ptarget->proc_id ,ret , ptraffic->handled);
+		ret = direct_send(penv , ptarget , stlv_pack , stlv_len);
+		if(ret < 0)		//出现网络故障，则重置链接
+			close_target_fd(penv , ptarget , __FUNCTION__ , penv->epoll_fd , 1);
+		else if(ret < stlv_len)	//未发送数据或发送部分数据 需要加入sending_list
+		{
+			append_sending_node(penv , ptarget);
+			ret = pkg_2_target_stlv(penv , ptarget , &stlv_pack[ret] , stlv_len-ret);
+			if(ret != 0)
+			{
+				pbridge_info->send.dropped++;
+				pbridge_info->send.latest_drop = curr_ts;
+				ptraffic->dropped++;
+				ptraffic->latest_drop = curr_ts;
+				slog_log(slogd , SL_ERR , "%s drop package for pkg_2_target_stlv failed!" , __FUNCTION__);
+				//这种情况似乎需要断连 因为部分数据已经遗失
+			}
+			else
+				slog_log(slogd , SL_DEBUG , "%s save part of data to target! stlv_len:%d ret:%d" , __FUNCTION__ , stlv_len , ret);
+		}
+		*/
+		//发送完成
 
 	}
 
@@ -1547,12 +1728,14 @@ static int read_client_socket(int fd , bridge_hub_t *phub)
 		//缓冲区有数据[拷贝到另一缓冲区头部并更改buff指针]
 		if(pclient->buff == pclient->main_buff)
 		{
+			//slog_log(slogd , SL_DEBUG , "%s copy %d bytes" , __FUNCTION__ , pclient->tail-pos);
 			memcpy(pclient->back_buff , &pclient->buff[pos] , pclient->tail-pos);
 			pclient->buff = pclient->back_buff;
 			pclient->tail = pclient->tail-pos;
 		}
 		else
 		{
+			//slog_log(slogd , SL_DEBUG , "%s copy %d bytes" , __FUNCTION__ , pclient->tail-pos);
 			memcpy(pclient->main_buff , &pclient->buff[pos] , pclient->tail-pos);
 			pclient->buff = pclient->main_buff;
 			pclient->tail = pclient->tail-pos;
@@ -1796,6 +1979,7 @@ static int add_ticker(carrier_env_t *penv)
 		slog_log(slogd , SL_ERR , "<%s> add check_signal_stat failed!" , __FUNCTION__);
 		return -1;
 	}
+	/*
 	ret = append_carrier_ticker(penv , iter_sending_node , TIME_TICKER_T_CIRCLE , TICK_ITER_SENDING_LIST , "iter_sending_list" ,
 				penv);
 	if(ret < 0)
@@ -1803,6 +1987,7 @@ static int add_ticker(carrier_env_t *penv)
 		slog_log(slogd , SL_ERR , "<%s> add check_signal_stat failed!" , __FUNCTION__);
 		return -1;
 	}
+	*/
 	ret = append_carrier_ticker(penv , check_hash , TIME_TICKER_T_CIRCLE , TICK_CHECK_HASH_MAP , "check_hash_map" ,
 					penv);
 	if(ret < 0)
@@ -1853,7 +2038,7 @@ static void handle_connecting_fd(target_detail_t *ptarget , struct epoll_event *
 		//send
 		gen_verify_key(penv , key , sizeof(key));
 		send_inner_proto(penv , ptarget , INNER_PROTO_VERIFY_REQ , key , NULL);
-		set_sock_option(handle_fd , BRIDGE_PACK_LEN , 1024*2 , 1);
+		set_sock_option(handle_fd , CARRIER_SOCKET_BUFF_BIG , 1024*2 , 1);
 		return;
 	}
 
@@ -1893,7 +2078,7 @@ static void handle_connecting_fd(target_detail_t *ptarget , struct epoll_event *
 				ptarget->connected = TARGET_CONN_DONE;
 				ptarget->snd_buff = NULL;
 				ptarget->snd_buff_len = ptarget->snd_head = ptarget->snd_tail = 0;
-				set_sock_option(handle_fd , BRIDGE_PACK_LEN , 1024*2 , 1);
+				set_sock_option(handle_fd , CARRIER_SOCKET_BUFF_BIG , 1024*2 , 1);
 
 				//mange only
 				pitem = get_manage_item_by_id(penv , ptarget->proc_id);

@@ -17,7 +17,22 @@
 //#define SND_BIT_MAP_ALERT  (500*1024) //在通道可扩展缓冲区到达上限时，剩余空间不足该参数时进行send_bit_map置位(一般应大于package_len防止丢包)
 
 #define MAX_CHECK_SUM_BYTES 64 //发送时最多进行checksum校验的字节数目
+
+//设置socket的高一端缓存(recv的接收端 send的发送端)
+//缓存的大小和包大小的收发效率有关 缓存越大(1M)对大包(10K-100K)表现越好 缓存较小对小包(100-1k)表现更好
+//ps:缓存最好要大于2*PKG_LEN
+#define CARRIER_SOCKET_BUFF_BIG (1024*512)
+
 /*********DATA STRUCT*/
+//获得m所在结构的地址 t:结构类型 m:m所在结构的成员名 m_a:m的地址
+#define GET_STRUCT_ADDR(t , m , m_a) ((unsigned long)m_a - (unsigned long)&(((t *)0)->m))
+/*
+ * link_list
+ */
+typedef struct _link_list {
+	struct _link_list *next;
+}link_list_t;
+
 /*
  * proc_entry
  */
@@ -157,7 +172,8 @@ typedef struct _target_detail
 	unsigned long snd_head; //缓冲区头
 	unsigned long snd_tail;	//缓冲区尾
 	char *snd_buff;
-
+	char in_append; //是否正在投递
+	link_list_t appending; //正在投递的链表
 }target_detail_t;
 
 typedef struct _target_
@@ -250,8 +266,10 @@ typedef struct _client_info
 	int fd; //sock fd
 	char *buff;
 	int tail;
-	char main_buff[BRIDGE_PACK_LEN + 128];
-	char back_buff[BRIDGE_PACK_LEN + 128];
+	char main_buff[1024*1024];
+	char back_buff[1024*1024];
+	//char main_buff[BRIDGE_PACK_LEN + 128];
+	//char back_buff[BRIDGE_PACK_LEN + 128];
 	struct
 	{
 		int buff_len;		//total buff len
@@ -291,8 +309,9 @@ typedef struct _sending_node_t
 typedef struct _sending_list_t
 {
 	int total;
-	int valid;
-	sending_node_t head_node;
+	//int valid;
+	link_list_t head;
+	//sending_node_t head_node;
 }sending_list_t;
 
 /*

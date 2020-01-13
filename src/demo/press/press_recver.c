@@ -18,6 +18,7 @@
 #include <proc_bridge/proc_bridge.h>
 #include <slog/slog.h>
 
+
 extern int errno;
 
 #define MAX_MEMORY_CALLOC (1024*1024)
@@ -41,22 +42,31 @@ int main(int argc , char **argv)
 	int pkg_size = 0;
 	int fd = -1;
 	int ret = -1;
+	int fd2 = -1;
 	char *file_buff = NULL;
 
 	int recv_index = 0;
 	int sleep_times = 0;
 	int recv_times = 0;
-	int need_recv = 0;
 	int file_size = 0;
 	int buf_size = 0;
 	struct timeval tv;
 	long start_ts = 0;
 	long end_ts = 0;
+	int sender = 0;
 
 	int sld = -1;
 	char *slog_name = "recv.log";
+	char *sended_file = "recv_send.tmp";
 	SLOG_OPTION log_option;
 	//char log_buff[1024] = {0}; //only for text-content
+
+	int send_index = 0;
+	int need_send = 0;
+	char *snd_buff = NULL;
+	int send_times = 0;
+	char opted = 0;
+	int i = 0;
 
 	printf("press recver starts...\n");
 	if(argc <= 0)
@@ -108,13 +118,18 @@ int main(int argc , char **argv)
 
 	//open file
 	//为了避免文件IO造成的损失 先存内存再写
-	fd = open(output_file , O_WRONLY|O_TRUNC , 0);
+	fd = open(output_file , O_WRONLY|O_TRUNC|O_CREAT , 0);
 	if(fd < 0)
 	{
 		printf("open %s failed! err:%s\n" , output_file , strerror(errno));
 		return -1;
 	}
-
+	fd2 = open(sended_file , O_RDWR|O_TRUNC|O_CREAT , 0666);
+	if(fd2 < 0)
+	{
+		printf("open %s failed! err:%s\n" , sended_file , strerror(errno));
+		return -1;
+	}
 
 	//calloc memory
 	buf_size = file_size + 1024;
@@ -125,6 +140,19 @@ int main(int argc , char **argv)
 		return -1;
 	}
 
+	snd_buff = (char *)calloc(1 , buf_size);
+	if(!snd_buff)
+	{
+		printf("calloc snd_buff failed!\n");
+		return -1;
+	}
+	//rand snd_buff
+	srand(time(NULL));
+	for(i=0; i<file_size/10; i++)
+	{
+		snd_buff[i] = (char)rand();
+	}
+
 	/***BRIDGE*/
 	bd = open_bridge(name_space , my_proc , sld);
 	if(bd<0)
@@ -133,82 +161,111 @@ int main(int argc , char **argv)
 		return -1;
 	}
 
-	//recv
+	//recv + send
 	while(1)
 	{
-		if(recv_index >= file_size)
+		//break
+		if(recv_index >= file_size && send_index>=file_size)
 		{
-			printf("read complete!\n");
+			printf("complete!\n");
 			break;
 		}
 
-		ret = recv_from_bridge(bd , &file_buff[recv_index] , buf_size-recv_index , NULL , -1);
-		if(ret<0 && recv_index==0)	//not started
+		opted = 0;
+		//recv
+		while(recv_index < file_size)
 		{
-			usleep(100000);
-			continue;
-		}
-
-		if(ret < 0)
-		{
-			if(ret == -2)
+			ret = recv_from_bridge(bd , &file_buff[recv_index] , buf_size-recv_index , &sender , -1);
+			if(ret<0 && recv_index==0)	//not started
 			{
-				usleep(1000);
-				sleep_times++;
+				usleep(100000);
 				continue;
 			}
 
-			if(ret == -3)
+			//recv fail
+			if(ret < 0)
 			{
-				printf("recv failed! index:%d\n" , recv_index);
-				return 0;
+				if(ret == -2)	//recv empty
+				{
+					//usleep(1000);
+					//sleep_times++;
+					goto _sendback;
+				}
+
+				if(ret == -3)
+				{
+					printf("recv failed! index:%d\n" , recv_index);
+					return 0;
+				}
 			}
+
+			//recv success
+			if(recv_index == 0)
+			{
+				gettimeofday(&tv , NULL);
+				printf("started:%lu:%lu\n" , tv.tv_sec , tv.tv_usec);
+				slog_log(sld , SL_DEBUG , "started:%lu:%lu" , tv.tv_sec , tv.tv_usec);
+				start_ts = tv.tv_sec*100 + tv.tv_usec/10000;
+			}
+
+			opted = 1;
+			//upt
+			recv_index += ret;
+			if(ret != pkg_size)
+			{
+				printf("not recv pkg_size! index:%d ret:%d\n" , recv_index , ret);
+			}
+			recv_times++;
+
 		}
 
-		if(recv_index == 0)
+_sendback:
+		while(send_index < file_size)
 		{
-			gettimeofday(&tv , NULL);
-			printf("started:%lu:%lu\n" , tv.tv_sec , tv.tv_usec);
-			slog_log(sld , SL_DEBUG , "started:%lu:%lu" , tv.tv_sec , tv.tv_usec);
-			start_ts = tv.tv_sec*100 + tv.tv_usec/10000;
-		}
-		//recv
-		//write(fd , &file_buff[recv_index] , ret);
+			need_send = (file_size-send_index)>=pkg_size?pkg_size:(file_size-send_index);
+			ret = send_to_bridge(bd , sender , &snd_buff[send_index] , need_send);
 
-		//log
-		//memcpy(log_buff , &file_buff[recv_index] , ret);
-		//log_buff[ret] = 0;
+			//send fail
+			if(ret != 0)
+			{
+				slog_log(sld , SL_DEBUG , "send error:%d" , ret);
+				//sleep_times++;
+				//usleep(10000);
+				break;
+			}
 
-		//upt
-		recv_index += ret;
-		if(ret != pkg_size)
-		{
-			printf("not recv pkg_size! index:%d ret:%d\n" , recv_index , ret);
+			opted = 1;
+			send_times++;
+			send_index += need_send;
+
 		}
-		recv_times++;
-		//printf("[%d] %d\n" , recv_times , recv_index);
-		if(recv_times % 500 == 0)
+
+		//sleep?
+		if(!opted)
 		{
-			//write(1 , "." , 1);
+			usleep(10000);
+			sleep_times++;
 		}
-		//slog_log(sld , SL_DEBUG , "[%d]<%d>(%d)" , recv_times , recv_index , ret);
 	}
 
 	//result
 	gettimeofday(&tv , NULL);
 	printf("ended:%lu:%lu\n" , tv.tv_sec , tv.tv_usec);
-	printf("recv_times:%d sleep_times:%d\n" , recv_times , sleep_times);
-	slog_log(sld , SL_DEBUG , "ended:%lu:%lu recv_times:%d sleep_times:%d" , tv.tv_sec , tv.tv_usec , recv_times , sleep_times);
+	printf("recv_times:%d sleep_times:%d send_times:%d\n" , recv_times , sleep_times , send_times);
+	slog_log(sld , SL_DEBUG , "ended:%lu:%lu recv_times:%d sleep_times:%d send_times:%d" , tv.tv_sec , tv.tv_usec , recv_times , sleep_times ,
+			send_times);
 	end_ts = tv.tv_sec*100 + tv.tv_usec/10000;
 	if(end_ts != start_ts)
 	{
-		printf("cost:%ld ms qps:%ld per 10ms\n" , (end_ts-start_ts)*10 , recv_times/(end_ts-start_ts));
-		slog_log(sld , SL_DEBUG , "cost:%ld ms qps:%ld per 10ms" , (end_ts-start_ts)*10 , recv_times/(end_ts-start_ts));
+		printf("cost:%ld ms qps:%ld per 10ms\n" , (end_ts-start_ts)*10 , (recv_times+send_times)/(end_ts-start_ts));
+		slog_log(sld , SL_DEBUG , "cost:%ld ms qps:%ld per 10ms" , (end_ts-start_ts)*10 , (recv_times+send_times)/(end_ts-start_ts));
 	}
 	fflush(stdout);
 
 	write(fd , file_buff , file_size);
+	write(fd2 , snd_buff , file_size);
 	free(file_buff);
+	free(snd_buff);
 	close(fd);
 	return 0;
 }
