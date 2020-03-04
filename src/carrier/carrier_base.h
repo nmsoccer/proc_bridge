@@ -52,6 +52,7 @@ typedef struct _proc_entry_t
 #define TIME_TICKER_T_SINGLE_SHOT 1
 #define TIME_TICKER_T_CIRCLE 2
 
+	//ms
 #define TICK_CONNECT_TO_REMOTE 3500
 #define TICK_MANAGE_PRINT 5000
 #define TICK_CHECK_BRIDGE 3000
@@ -60,6 +61,7 @@ typedef struct _proc_entry_t
 #define TICK_CHECK_SIG_STAT 2000
 #define TICK_ITER_SENDING_LIST 500//1500
 #define TICK_CHECK_HASH_MAP 15000
+#define TICK_CHECK_SND_BUFF_MEMROY 30000
 
 typedef int (* CARRIER_TICK) (void *arg); //return 0:single-shot; >0:next-expire-ms
 typedef struct _time_ticker_t

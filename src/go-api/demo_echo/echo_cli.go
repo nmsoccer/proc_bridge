@@ -38,6 +38,7 @@ func main() {
 	//arg
 	if *proc_id<=0 || *serv_id<=0 || *ns=="" {
 		flag.PrintDefaults();
+		fmt.Printf("example: ./echo_cli -i 20000 -t 30000 -N echo\n");
 		return;
 	}
 	fmt.Printf("proc_id:%d serv_id:%d ns:%s\n", *proc_id , *serv_id , *ns);

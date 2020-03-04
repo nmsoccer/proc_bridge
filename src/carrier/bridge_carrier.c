@@ -93,6 +93,7 @@ static int check_client_info(void *arg);
 static int check_run_statistics(void *arg);
 static int check_signal_stat(void *arg);
 static int check_hash(void *arg);
+static int check_snd_buff_memory(void *arg);
 static int recv_client_pkg(carrier_env_t *penv , client_info_t *pclient , bridge_package_t *pkg);
 static int expand_recv_buff(carrier_env_t *penv , client_info_t *pclient);
 static int flush_recving_buff(carrier_env_t *penv , client_info_t *pclient);
@@ -1255,13 +1256,15 @@ static int dispatch_bridge(int reward_ms)
 		}
 
 		/***Get Target Info*/
-		ptarget = target_info.head.next;
+		ptarget = proc_id2_target(penv , &target_info , pstpack->pack_head.recver_id);
+		/*
+		ptarget = target_info.head.next;		
 		while(ptarget)
 		{
 			if(ptarget->proc_id == pstpack->pack_head.recver_id)
 				break;
 			ptarget = ptarget->next;
-		}
+		}*/
 		if(!ptarget)
 		{
 			slog_log(slogd , SL_ERR , "%s failed! target %d not found!" , __FUNCTION__ , pstpack->pack_head.recver_id);
@@ -1990,6 +1993,14 @@ static int add_ticker(carrier_env_t *penv)
 	*/
 	ret = append_carrier_ticker(penv , check_hash , TIME_TICKER_T_CIRCLE , TICK_CHECK_HASH_MAP , "check_hash_map" ,
 					penv);
+	if(ret < 0)
+	{
+		slog_log(slogd , SL_ERR , "<%s> add check_hash failed!" , __FUNCTION__);
+		return -1;
+	}
+
+	ret = append_carrier_ticker(penv , check_snd_buff_memory , TIME_TICKER_T_CIRCLE , TICK_CHECK_SND_BUFF_MEMROY , "check_snd_buff_memory" ,
+						penv);
 	if(ret < 0)
 	{
 		slog_log(slogd , SL_ERR , "<%s> add check_hash failed!" , __FUNCTION__);
@@ -2901,6 +2912,95 @@ static int check_signal_stat(void *arg)
 	}
 	return 0;
 }
+
+static int check_snd_buff_memory(void *arg)
+{
+	target_info_t *ptarget_info = &target_info;
+	target_detail_t *ptarget = NULL;	
+	carrier_env_t *penv = (carrier_env_t *)arg;
+	int ret = -1;
+	unsigned int new_len = 0;
+	char *new_buff = NULL;
+	unsigned int should_copy = 0;
+	unsigned int data_len = 0;
+
+	if (ptarget_info->target_count <= 0)
+		return 0;
+
+	//检查每个target之buff是否需要shrink
+	ptarget = ptarget_info->head.next;
+	while(ptarget)
+	{
+		do
+		{
+			//no buff
+			if(!ptarget->snd_buff)
+				break;
+
+			//memory < 1M
+			if(ptarget->snd_buff_len < (1024*1024))
+				break;
+
+			//data_len <= 1/3*buff_len
+			data_len = TARGET_DATA_LEN(ptarget);
+			if(data_len >= ptarget->snd_buff_len/3)
+				break;
+
+			//shrink memory
+			new_len = ptarget->snd_buff_len*2/3; //新长度等于原长度的2/3
+			slog_log(penv->slogd , SL_INFO , "<%s> try to shrink snd_memory! proc_id:%d proc_name:%s data_len:%d buff_len:%d new_len:%d" , __FUNCTION__ ,
+					ptarget->proc_id , ptarget->target_name , data_len , ptarget->snd_buff_len , new_len);
+				//new buff
+			new_buff = calloc(1 , new_len);
+			if(!new_buff)
+			{
+				slog_log(penv->slogd , SL_ERR , "<%s> alloc memory failed! proc_id:%d proc_name:%s data_len:%d buff_len:%d new_len:%d" , __FUNCTION__ ,
+									ptarget->proc_id , ptarget->target_name , data_len , ptarget->snd_buff_len , new_len);
+				return -1;
+			}
+
+				//empty data
+			if(data_len <= 0)
+			{
+				free(ptarget->snd_buff);
+				ptarget->snd_buff = new_buff;
+				ptarget->snd_buff_len = new_len;
+				break;
+			}
+
+				//copy data
+			if(ptarget->snd_head < ptarget->snd_tail)
+			{
+				should_copy = ptarget->snd_tail-ptarget->snd_head;
+				memcpy(new_buff , &ptarget->snd_buff[ptarget->snd_head] , should_copy);
+				ptarget->snd_head = 0;
+				ptarget->snd_tail = should_copy;
+			}
+			else if(ptarget->snd_head > ptarget->snd_tail)
+			{
+				should_copy = ptarget->snd_buff_len - ptarget->snd_head;
+				memcpy(new_buff , &ptarget->snd_buff[ptarget->snd_head] , should_copy);
+				memcpy(&new_buff[should_copy] , &ptarget->snd_buff[0] , ptarget->snd_tail);
+				ptarget->snd_head = 0;
+				ptarget->snd_tail = should_copy + ptarget->snd_tail;
+			}
+			else //empty nothing
+			{
+				//nothing
+			}
+			free(ptarget->snd_buff);
+			ptarget->snd_buff = new_buff;
+			ptarget->snd_buff_len = new_len;
+			break;
+		}
+		while(0);
+
+		ptarget = ptarget->next;
+	}
+
+	return 0;
+}
+
 
 //接收来自客户端的pkg
 //return:-1:参数错误 -2:缓冲区满且到达上限 0:投递成功

@@ -49,6 +49,7 @@ func main() {
 	fmt.Printf("proc:%d name_space:%s\n", *proc_id , *ns);
 	if *proc_id<=0 || *ns=="" {
 		flag.PrintDefaults();
+		fmt.Printf("example: ./echo_serv -i 30000 -N echo\n");
 		return;
 	}
 	
